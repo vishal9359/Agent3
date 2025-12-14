@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
-from tree_sitter import Node, Parser
+from tree_sitter import Language, Node, Parser
 from tree_sitter_cpp import language as cpp_language
 
 from agent3.fs_utils import CPP_EXTS, iter_files, safe_read_text
@@ -25,7 +25,15 @@ class CallEdge:
 
 
 def _set_parser_language(parser: Parser) -> None:
-    lang = cpp_language()
+    raw = cpp_language()
+    # tree-sitter-cpp returns a PyCapsule; tree_sitter.Parser expects tree_sitter.Language.
+    lang: Language
+    if isinstance(raw, Language):
+        lang = raw
+    else:
+        # tree_sitter>=0.22 supports constructing Language from a capsule.
+        lang = Language(raw)  # type: ignore[arg-type]
+
     # tree-sitter API differs by version; support both.
     if hasattr(parser, "set_language"):
         parser.set_language(lang)  # type: ignore[attr-defined]
