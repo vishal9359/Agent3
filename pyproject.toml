@@ -1,0 +1,12 @@
+[project]
+name = "agent3"
+version = "0.1.0"
+description = "C++ project RAG + flowchart agent (Ollama + LangGraph)"
+requires-python = ">=3.11"
+readme = "README.md"
+dependencies = []
+
+[tool.ruff]
+line-length = 100
+
+
