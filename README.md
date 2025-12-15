@@ -53,9 +53,12 @@ python -m agent3 flowchart --project_path /path/to/poseidonos --scope /path/to/p
 ## Configuration (env vars)
 
 - `OLLAMA_BASE_URL` (default: `http://localhost:11434`)
-- `OLLAMA_CHAT_MODEL` (default: `qwen2.5`)
+- `OLLAMA_CHAT_MODEL` (default: `qwen3`)
 - `OLLAMA_EMBED_MODEL` (default: `jina/jina-embeddings-v2-base-en`)
 - `CHROMA_DIR` (default: `.chroma`)
+
+You can also override per command:
+- `agent3 ask --model qwen3:8b ...`
 
 ## Notes
 - This is designed to work on **any** C++ project without repo-specific assumptions.

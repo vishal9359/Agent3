@@ -17,12 +17,14 @@ def index_project(
     chunk_size: int = 2000,
     chunk_overlap: int = 200,
     clear_collection: bool = False,
+    ollama_base_url: str | None = None,
+    embed_model: str | None = None,
 ) -> None:
-    vs = get_vectorstore(collection)
+    vs = get_vectorstore(collection, embed_model=embed_model, ollama_base_url=ollama_base_url)
     if clear_collection:
         console.print(f"[yellow]Clearing collection:[/yellow] {collection}")
         vs.delete_collection()
-        vs = get_vectorstore(collection)
+        vs = get_vectorstore(collection, embed_model=embed_model, ollama_base_url=ollama_base_url)
 
     console.print("[cyan]Scanning C++ files...[/cyan]")
     docs = build_cpp_documents(project_path=project_path, scope=scope)

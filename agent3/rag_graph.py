@@ -41,9 +41,17 @@ def _format_context(docs: list[Document], max_chars: int = 25_000) -> str:
     return "".join(parts).strip()
 
 
-def build_rag_app(*, collection: str, k: int = 8):
-    vs = get_vectorstore(collection)
-    llm = get_chat_ollama(model=SETTINGS.ollama_chat_model, base_url=SETTINGS.ollama_base_url)
+def build_rag_app(
+    *,
+    collection: str,
+    k: int = 8,
+    chat_model: str | None = None,
+    embed_model: str | None = None,
+    ollama_base_url: str | None = None,
+):
+    base_url = ollama_base_url or SETTINGS.ollama_base_url
+    vs = get_vectorstore(collection, embed_model=embed_model, ollama_base_url=base_url)
+    llm = get_chat_ollama(model=chat_model or SETTINGS.ollama_chat_model, base_url=base_url)
 
     def retrieve(state: RAGState) -> RAGState:
         q = state["question"]
@@ -70,9 +78,36 @@ def build_rag_app(*, collection: str, k: int = 8):
     return g.compile()
 
 
-def ask(*, collection: str, question: str, k: int = 8) -> str:
-    app = build_rag_app(collection=collection, k=k)
-    out: dict[str, Any] = app.invoke({"question": question})
+def ask(
+    *,
+    collection: str,
+    question: str,
+    k: int = 8,
+    chat_model: str | None = None,
+    embed_model: str | None = None,
+    ollama_base_url: str | None = None,
+) -> str:
+    app = build_rag_app(
+        collection=collection,
+        k=k,
+        chat_model=chat_model,
+        embed_model=embed_model,
+        ollama_base_url=ollama_base_url,
+    )
+    try:
+        out: dict[str, Any] = app.invoke({"question": question})
+    except Exception as e:
+        msg = str(e)
+        # Ollama error message typically looks like:
+        # "ollama._types.ResponseError: model 'qwen2.5' not found (status code: 404)"
+        if "model" in msg and "not found" in msg:
+            raise RuntimeError(
+                "Ollama chat model not found. Set one of:\n"
+                "- CLI: --model qwen3  (or --model qwen3:8b / qwen2.5-coder)\n"
+                "- env: OLLAMA_CHAT_MODEL=qwen3\n"
+                f"Underlying error: {msg}"
+            ) from e
+        raise
     return str(out.get("answer", "")).strip()
 
 
