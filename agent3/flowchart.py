@@ -190,13 +190,43 @@ You will be given a user scenario (what the user is trying to do) and code conte
 Goal: output a Mermaid flowchart that looks like a whiteboard execution flow (Start/End, decisions, key steps),
 NOT a call graph. Model the runtime steps a user triggers for the scenario.
 
+Flowchart symbol rules (MUST follow these Mermaid shapes):
+- Terminator (Start/End):   id([Label])
+- Process step:            id["Label"]
+- Decision/condition:      id{"Label?"}
+- Input/Output (optional): id[/"Label"/]
+
 Rules:
 - Output ONLY Mermaid (no prose), starting with: flowchart TD
-- Must include Start and End nodes.
-- Use decision diamonds { } when behavior branches.
-- Use short, meaningful step labels (CLI parse args, validate, call backend API, handle error, print result, etc.).
-- If the context is insufficient, include a node that says what code is missing (e.g., "Need: <file/function>") and end.
+- Every node MUST be explicitly typed using one of the shapes above (no implicit nodes).
+- Must include Start and End terminators.
+- Use decision diamonds for branches, include YES/NO labels on edges where helpful.
+- Prefer many small, concrete steps over a few vague steps.
+- Include validation, error paths, and key side-effects (logging, RPC/API calls, state changes) when present in code.
+- If the context is insufficient, include a process node: need["Need: <file/function>"] then end.
 """
+
+
+def _ensure_start_end_terminators(mermaid: str) -> str:
+    lines = mermaid.splitlines()
+    if not lines:
+        return "flowchart TD\n  start([Start])\n  end([End])\n"
+    # Ensure header
+    if not lines[0].lstrip().startswith("flowchart"):
+        lines = ["flowchart TD"] + lines
+
+    s = "\n".join(lines)
+    # Ensure start/end nodes exist as terminators. We accept either explicit node
+    # declarations or inline definitions on edges.
+    if "start([" not in s:
+        # Insert after header
+        lines = [lines[0], "  start([Start])"] + lines[1:]
+    s = "\n".join(lines)
+    if "end([" not in s:
+        lines.append("  end([End])")
+
+    out = "\n".join(lines).strip() + "\n"
+    return out
 
 
 def generate_scenario_flowchart_mermaid(
@@ -206,6 +236,8 @@ def generate_scenario_flowchart_mermaid(
     collection: str | None = None,
     focus: Path | None = None,
     k: int = 12,
+    detail: str = "high",
+    max_steps: int = 26,
     chat_model: str | None = None,
     embed_model: str | None = None,
     ollama_base_url: str | None = None,
@@ -261,17 +293,24 @@ def generate_scenario_flowchart_mermaid(
         deduped.append(d)
 
     context = _format_context_for_llm(deduped)
-    user_msg = f"Scenario:\n{scenario}\n\nProject root:\n{project_path}\n\nContext:\n{context}\n"
+    # Map detail to guidance.
+    detail_guidance = {
+        "low": "Aim for ~8-12 nodes focusing on major stages only.",
+        "medium": "Aim for ~14-20 nodes including validations and key calls.",
+        "high": "Aim for ~20-35 nodes including validations, branching, and key sub-steps.",
+    }.get(detail, "Aim for ~20-35 nodes including validations, branching, and key sub-steps.")
+
+    user_msg = (
+        f"Scenario:\n{scenario}\n\n"
+        f"Constraints:\n- Detail: {detail} ({detail_guidance})\n- Max steps: {max_steps}\n\n"
+        f"Project root:\n{project_path}\n\nContext:\n{context}\n"
+    )
     resp = llm.invoke([SystemMessage(content=SCENARIO_SYSTEM_PROMPT), HumanMessage(content=user_msg)])
     mermaid = _strip_code_fences(getattr(resp, "content", str(resp)))
     if not mermaid.lstrip().startswith("flowchart"):
         mermaid = "flowchart TD\n" + mermaid.strip() + "\n"
 
-    # Ensure Start/End exist (best-effort).
-    if "Start" not in mermaid and "start" not in mermaid:
-        mermaid = "flowchart TD\n  start([Start])\n" + "\n".join(mermaid.splitlines()[1:]) + "\n"
-    if "End" not in mermaid and "end" not in mermaid:
-        mermaid = mermaid.rstrip() + "\n  end([End])\n"
+    mermaid = _ensure_start_end_terminators(mermaid)
 
     nodes, edges = _count_mermaid_edges_nodes(mermaid)
     return MermaidGraph(mermaid=mermaid if mermaid.endswith("\n") else mermaid + "\n", node_count=nodes, edge_count=edges)
@@ -285,6 +324,8 @@ def write_scenario_flowchart(
     collection: str | None = None,
     focus: Path | None = None,
     k: int = 12,
+    detail: str = "high",
+    max_steps: int = 26,
     chat_model: str | None = None,
     embed_model: str | None = None,
     ollama_base_url: str | None = None,
@@ -295,6 +336,8 @@ def write_scenario_flowchart(
         collection=collection,
         focus=focus,
         k=k,
+        detail=detail,
+        max_steps=max_steps,
         chat_model=chat_model,
         embed_model=embed_model,
         ollama_base_url=ollama_base_url,

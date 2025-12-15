@@ -66,6 +66,8 @@ python -m agent3 flowchart \
   --scenario "Create a volume via CLI" \
   --collection poseidonos \
   --focus src/cli/create_volume_command.cpp \
+  --detail high \
+  --max_steps 32 \
   --model qwen3:8b
 ```
 

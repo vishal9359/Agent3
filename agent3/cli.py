@@ -90,6 +90,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_fc.add_argument("--k", type=int, default=12, help="Retriever top-k for --scenario")
     p_fc.add_argument(
+        "--detail",
+        choices=["low", "medium", "high"],
+        default="high",
+        help="Level of detail for --scenario flowchart (default: high).",
+    )
+    p_fc.add_argument(
+        "--max_steps",
+        type=int,
+        default=26,
+        help="Approx max number of steps/nodes for --scenario (default: 26).",
+    )
+    p_fc.add_argument(
         "--ollama_base_url",
         default=None,
         help="Override Ollama base URL for --scenario (default: env OLLAMA_BASE_URL)",
@@ -156,6 +168,8 @@ def main(argv: list[str] | None = None) -> int:
                 collection=args.collection,
                 focus=args.focus,
                 k=args.k,
+                detail=args.detail,
+                max_steps=args.max_steps,
                 ollama_base_url=args.ollama_base_url,
                 chat_model=args.chat_model,
                 embed_model=args.embed_model,
