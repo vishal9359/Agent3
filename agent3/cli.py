@@ -37,6 +37,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_ask.add_argument("--question", required=True)
     p_ask.add_argument("--k", type=int, default=8)
     p_ask.add_argument(
+        "--project_path",
+        default=None,
+        type=_path,
+        help="Optional project root to resolve --focus (recommended).",
+    )
+    p_ask.add_argument(
+        "--focus",
+        default=None,
+        type=_path,
+        help="Focus file (relative to --project_path or absolute) to inject into context.",
+    )
+    p_ask.add_argument(
         "--ollama_base_url",
         default=None,
         help="Override Ollama base URL (default: env OLLAMA_BASE_URL / http://localhost:11434)",
@@ -60,6 +72,40 @@ def build_parser() -> argparse.ArgumentParser:
     p_fc.add_argument("--out", required=True, type=_path, help="Output .mmd file")
     p_fc.add_argument("--entry", default=None, help="Substring to choose an entry function (optional)")
     p_fc.add_argument("--max_nodes", type=int, default=120)
+    p_fc.add_argument(
+        "--scenario",
+        default=None,
+        help="Scenario-driven execution flowchart (whiteboard-style). When set, ignores --entry/--max_nodes.",
+    )
+    p_fc.add_argument(
+        "--collection",
+        default=None,
+        help="Chroma collection to retrieve code context from (recommended for --scenario).",
+    )
+    p_fc.add_argument(
+        "--focus",
+        type=_path,
+        default=None,
+        help="Focus file (relative to --project_path or absolute) to include fully in context for --scenario.",
+    )
+    p_fc.add_argument("--k", type=int, default=12, help="Retriever top-k for --scenario")
+    p_fc.add_argument(
+        "--ollama_base_url",
+        default=None,
+        help="Override Ollama base URL for --scenario (default: env OLLAMA_BASE_URL)",
+    )
+    p_fc.add_argument(
+        "--chat_model",
+        "--model",
+        dest="chat_model",
+        default=None,
+        help="Override Ollama chat model for --scenario (default: env OLLAMA_CHAT_MODEL / qwen3)",
+    )
+    p_fc.add_argument(
+        "--embed_model",
+        default=None,
+        help="Override Ollama embedding model for retrieval in --scenario (default: env OLLAMA_EMBED_MODEL)",
+    )
 
     return p
 
@@ -93,20 +139,37 @@ def main(argv: list[str] | None = None) -> int:
             ollama_base_url=args.ollama_base_url,
             chat_model=args.chat_model,
             embed_model=args.embed_model,
+            project_path=args.project_path,
+            focus=args.focus,
         )
         console.print(resp)
         return 0
 
     if args.cmd == "flowchart":
-        from agent3.flowchart import write_flowchart
+        if args.scenario:
+            from agent3.flowchart import write_scenario_flowchart
 
-        g = write_flowchart(
-            project_path=args.project_path,
-            scope=args.scope,
-            out=args.out,
-            entry=args.entry,
-            max_nodes=args.max_nodes,
-        )
+            g = write_scenario_flowchart(
+                project_path=args.project_path,
+                out=args.out,
+                scenario=args.scenario,
+                collection=args.collection,
+                focus=args.focus,
+                k=args.k,
+                ollama_base_url=args.ollama_base_url,
+                chat_model=args.chat_model,
+                embed_model=args.embed_model,
+            )
+        else:
+            from agent3.flowchart import write_flowchart
+
+            g = write_flowchart(
+                project_path=args.project_path,
+                scope=args.scope,
+                out=args.out,
+                entry=args.entry,
+                max_nodes=args.max_nodes,
+            )
         console.print(
             f"[green]Wrote[/green] {args.out}  (nodes={g.node_count}, edges={g.edge_count})"
         )

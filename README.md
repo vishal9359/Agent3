@@ -33,6 +33,16 @@ python -m agent3 index --project_path /path/to/poseidonos --collection poseidono
 python -m agent3 ask --collection poseidonos --question "What is the startup flow of the system?"
 ```
 
+Ask with a focus file (higher accuracy for file-specific questions):
+
+```bash
+python -m agent3 ask \
+  --collection poseidonos \
+  --project_path /path/to/poseidonos \
+  --focus src/cli/create_volume_command.cpp \
+  --question "Explain the execution flow when the user runs the create volume CLI"
+```
+
 ### 4) Generate flowchart (Mermaid)
 
 Project-wide (may be large; use `--max_nodes` to keep it readable):
@@ -45,6 +55,18 @@ Scoped module:
 
 ```bash
 python -m agent3 flowchart --project_path /path/to/poseidonos --scope /path/to/poseidonos/src --out src_flow.mmd --max_nodes 120
+```
+
+Scenario-driven (execution) flowchart (whiteboard-style):
+
+```bash
+python -m agent3 flowchart \
+  --project_path /path/to/poseidonos \
+  --out create_volume.mmd \
+  --scenario "Create a volume via CLI" \
+  --collection poseidonos \
+  --focus src/cli/create_volume_command.cpp \
+  --model qwen3:8b
 ```
 
 ### View Mermaid diagrams
