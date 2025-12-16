@@ -272,7 +272,12 @@ def _normalize_mermaid_linebreaks(mermaid: str) -> str:
     # Normalize newlines to \n first.
     mermaid = mermaid.replace("\r\n", "\n").replace("\r", "\n")
 
-    node_decl_pat = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\s*(\(\[|\[\"|\{|\[/\")")
+    # Node declarations (quoted/unquoted):
+    # - id([Start])
+    # - id{Decision}
+    # - id["Process"] / id[Process]
+    # - id[/"IO"/] / id[/IO/]
+    node_decl_pat = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\s*(\(\[|\{|\[/|\[)")
 
     out_lines: list[str] = []
     for raw in mermaid.splitlines():
@@ -841,103 +846,146 @@ def _build_sfm_from_function(
     fn_node,
     max_steps: int,
 ) -> dict:
+    """
+    Build a Scenario Flow Model (SFM) using deterministic, rule-based extraction.
+
+    Scenario boundary rules (enforced here):
+    - Include: argument parsing, validation decisions, business decisions, state-changing calls, returns/exits.
+    - Exclude: logging/metrics, most utility calls, deep internal calls (we never descend).
+    """
+    import re
+
     b = _SFMBuilder(max_steps=max_steps)
 
     body = fn_node.child_by_field_name("body")
     if body is None:
         raise RuntimeError("Selected entry function has no body.")
 
-    prev = "start"
+    def split_words(name: str) -> str:
+        s2 = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", name)
+        s2 = re.sub(r"[_\-]+", " ", s2)
+        return " ".join(s2.split()).strip()
 
-    def add_step(label: str) -> None:
-        nonlocal prev
-        if prev == "end":
-            return
-        nid = b.add_process(label)
+    def classify_call(callee: str) -> tuple[bool, str]:
+        """
+        Return (include, label).
+        """
+        c = callee.strip()
+        lc = c.lower()
+        if not c:
+            return False, ""
+        if _is_noise_call(c):
+            return False, ""
+
+        # Common boundary verbs
+        verbs = [
+            ("parse", "Parse"),
+            ("check", "Validate"),
+            ("validate", "Validate"),
+            ("isvalid", "Validate"),
+            ("verify", "Validate"),
+            ("get", "Lookup"),
+            ("set", "Set"),
+            ("add", "Add"),
+            ("remove", "Remove"),
+            ("delete", "Delete"),
+            ("create", "Create"),
+            ("open", "Open"),
+            ("close", "Close"),
+            ("init", "Init"),
+            ("start", "Start"),
+            ("stop", "Stop"),
+            ("execute", "Execute"),
+            ("handle", "Handle"),
+        ]
+        for key, verb in verbs:
+            if key in lc:
+                # strip the key to get object-ish
+                obj = re.sub(key, "", c, flags=re.IGNORECASE)
+                obj = split_words(obj) if obj else split_words(c)
+                obj = obj or split_words(c)
+                return True, f"{verb} {obj}".strip()
+
+        # Default: treat unknown calls as utility (exclude)
+        return False, ""
+
+    def include_raw_decl(text: str) -> bool:
+        t = text.lower()
+        # heuristics for argument parsing / state vars / important assignments
+        return any(k in t for k in ("argv", "argc", "arg", "option", "param", "config", "ret"))
+
+    def connect(frontier: list[str], dst: str, label: str | None = None) -> None:
+        for src in frontier:
+            if src == "end":
+                continue
+            b.add_edge(src, dst, label if (label and len(frontier) == 1) else None)
+
+    def ensure_branch_node(entry: str, label: str) -> list[str]:
+        """
+        If a branch is empty, create a small 'Proceed' node so we don't lose YES/NO semantics.
+        """
+        nid = b.add_process("Proceed")
         if not nid:
-            b.add_edge(prev, "end")
-            prev = "end"
-            return
-        b.add_edge(prev, nid)
-        prev = nid
+            return ["end"]
+        b.add_edge(entry, nid, label)
+        return [nid]
 
-    def add_return(label: str) -> None:
-        nonlocal prev
-        if prev == "end":
-            return
-        nid = b.add_process(label)
-        if not nid:
-            b.add_edge(prev, "end")
-            prev = "end"
-            return
-        b.add_edge(prev, nid)
-        b.add_edge(nid, "end")
-        prev = "end"
-
-    def handle_stmt(stmt) -> None:
-        nonlocal prev
+    def process_statement(stmt, frontier: list[str], incoming_label: str | None = None) -> list[str]:
+        if not frontier:
+            return []
         if b._steps >= b.max_steps:
-            b.add_edge(prev, "end")
-            prev = "end"
-            return
+            connect(frontier, "end")
+            return []
 
         # if (...) { ... } else { ... }
         if stmt.type == "if_statement":
             cond = stmt.child_by_field_name("condition")
             cond_txt = _normalize_ws(_node_text(source_bytes, cond)) if cond is not None else "condition"
-            # Sanitize condition text before using in decision node
             cond_txt = _sanitize_label(cond_txt)
             d = b.add_decision(cond_txt.rstrip("?") + "?")
             if not d:
-                b.add_edge(prev, "end")
-                prev = "end"
-                return
-            b.add_edge(prev, d)
-
-            merge = b.add_process("Continue")
-            if not merge:
-                # No room to model; terminate.
-                b.add_edge(d, "end")
-                prev = "end"
-                return
+                connect(frontier, "end")
+                return []
+            connect(frontier, d, incoming_label)
 
             cons = stmt.child_by_field_name("consequence")
             alt = stmt.child_by_field_name("alternative")
 
-            # THEN branch
-            prev = d
-            if cons is not None:
-                _handle_stmt_or_block(cons, edge_label="YES")
-            else:
-                b.add_edge(d, merge, "YES")
-            # if branch ended at end, skip merge edge
-            if prev != "end":
-                b.add_edge(prev, merge)
+            then_front = process_block(cons, [d], branch_label="YES") if cons is not None else []
+            else_front = process_block(alt, [d], branch_label="NO") if alt is not None else []
 
-            # ELSE
-            prev = d
-            if alt is not None:
-                _handle_stmt_or_block(alt, edge_label="NO")
-                if prev != "end":
-                    b.add_edge(prev, merge)
-            else:
-                b.add_edge(d, merge, "NO")
+            if not then_front:
+                then_front = ensure_branch_node(d, "YES")
+            if not else_front:
+                else_front = ensure_branch_node(d, "NO")
 
-            prev = merge
-            return
+            # Merge without an explicit merge node: next statements will connect from all live tails.
+            merged = []
+            for x in then_front + else_front:
+                if x and x != "end" and x not in merged:
+                    merged.append(x)
+            return merged
 
-        # return ...
+        # return / throw
         if stmt.type == "return_statement":
             txt = _normalize_ws(_node_text(source_bytes, stmt))
-            add_return(txt if txt else "Return")
-            prev = "end"
-            return
+            nid = b.add_process(_sanitize_label(txt if txt else "Return"))
+            if not nid:
+                connect(frontier, "end", incoming_label)
+                return []
+            connect(frontier, nid, incoming_label)
+            b.add_edge(nid, "end")
+            return []
 
-        if stmt.type in {"throw_statement"}:
+        if stmt.type == "throw_statement":
             txt = _normalize_ws(_node_text(source_bytes, stmt))
-            add_return(txt if txt else "Throw")
-            prev = "end"
-            return
+            nid = b.add_process(_sanitize_label(txt if txt else "Throw"))
+            if not nid:
+                connect(frontier, "end", incoming_label)
+                return []
+            connect(frontier, nid, incoming_label)
+            b.add_edge(nid, "end")
+            return []
 
         # while/for loops (simplified)
         if stmt.type in {"while_statement", "for_statement"}:
@@ -945,106 +993,103 @@ def _build_sfm_from_function(
             cond_txt = _normalize_ws(_node_text(source_bytes, cond)) if cond is not None else "loop condition"
             cond_txt = _sanitize_label(cond_txt)
             d = b.add_decision(cond_txt.rstrip("?") + "?")
-            b.add_edge(prev, d)
-            merge = b.add_process("Continue")
+            if not d:
+                connect(frontier, "end")
+                return []
+            connect(frontier, d, incoming_label)
 
             body_n = stmt.child_by_field_name("body")
-            if body_n is not None:
-                prev = d
-                _handle_stmt_or_block(body_n, edge_label="YES")
-                if prev != "end":
-                    b.add_edge(prev, d, "loop")
-            b.add_edge(d, merge, "NO")
-            prev = merge
-            return
+            body_front = process_block(body_n, [d], branch_label="YES") if body_n is not None else []
+            if not body_front:
+                body_front = ensure_branch_node(d, "YES")
+            for tail in body_front:
+                if tail and tail != "end":
+                    b.add_edge(tail, d, "loop")
 
-        # switch_statement
+            no_front = ensure_branch_node(d, "NO")
+            return no_front
+
+        # switch_statement (kept high-level)
         if stmt.type == "switch_statement":
             val = stmt.child_by_field_name("value")
             val_txt = _normalize_ws(_node_text(source_bytes, val)) if val is not None else "switch"
             val_txt = _sanitize_label(val_txt)
             d = b.add_decision(f"{val_txt}?")
-            b.add_edge(prev, d)
-            merge = b.add_process("Continue")
-            body_n = stmt.child_by_field_name("body")
-            if body_n is not None:
-                # Very simplified: treat each case as a branch to merge.
-                for c in body_n.children:
-                    if c.type in {"case_statement", "default_statement"}:
-                        lab = _normalize_ws(_node_text(source_bytes, c.children[0])) if c.children else "case"
-                        prev = d
-                        b.add_edge(d, merge, lab)
-                b.add_edge(d, merge, "default")
-            prev = merge
-            return
+            if not d:
+                connect(frontier, "end")
+                return []
+            connect(frontier, d, incoming_label)
+            # We do not expand cases (deep internal); just proceed.
+            return ensure_branch_node(d, "case")
 
-        # calls / assignments / declarations as process steps
+        # Call expression statement
         call = _stmt_is_call_expr(stmt)
         if call is not None:
-            callee = _callee_name_from_call(source_bytes, call) or "call"
-            if _is_noise_call(callee):
-                return
-            add_step(f"Call {callee}()")
-            return
+            callee = _callee_name_from_call(source_bytes, call) or ""
+            include, label = classify_call(callee)
+            if not include:
+                return frontier
+            nid = b.add_process(_sanitize_label(label))
+            if not nid:
+                connect(frontier, "end", incoming_label)
+                return []
+            connect(frontier, nid, incoming_label)
+            return [nid]
 
-        if stmt.type in {"declaration"}:
+        # Declarations and expression statements: include only if they look scenario-boundary relevant.
+        if stmt.type == "declaration":
             txt = _normalize_ws(_node_text(source_bytes, stmt))
-            add_step(txt)
-            return
+            if not include_raw_decl(txt):
+                return frontier
+            nid = b.add_process(_sanitize_label(txt))
+            if not nid:
+                connect(frontier, "end", incoming_label)
+                return []
+            connect(frontier, nid, incoming_label)
+            return [nid]
 
-        if stmt.type in {"expression_statement"}:
+        if stmt.type == "expression_statement":
             txt = _normalize_ws(_node_text(source_bytes, stmt))
-            if txt:
-                add_step(txt)
-            return
+            if not txt or not include_raw_decl(txt):
+                return frontier
+            nid = b.add_process(_sanitize_label(txt))
+            if not nid:
+                connect(frontier, "end", incoming_label)
+                return []
+            connect(frontier, nid, incoming_label)
+            return [nid]
 
-        # Fallback: keep a compact representation
-        txt = _normalize_ws(_node_text(source_bytes, stmt))
-        if txt:
-            add_step(txt)
+        # Fallback: ignore
+        return frontier
 
-    def _handle_stmt_or_block(node, *, edge_label: str | None = None) -> None:
-        nonlocal prev
-        if prev == "end":
-            return
-        # Connect from current prev to first node in this branch with label
-        if node.type == "compound_statement":
-            stmts = _iter_statement_nodes(node)
-            if not stmts:
-                return
-            first = stmts[0]
-            # create a tiny "branch" anchor
-            anchor = b.add_process("Branch")
-            if not anchor:
-                b.add_edge(prev, "end", edge_label)
-                prev = "end"
-                return
-            b.add_edge(prev, anchor, edge_label)
-            prev = anchor
-            for st in stmts:
-                handle_stmt(st)
-        else:
-            anchor = b.add_process("Branch")
-            if not anchor:
-                b.add_edge(prev, "end", edge_label)
-                prev = "end"
-                return
-            b.add_edge(prev, anchor, edge_label)
-            prev = anchor
-            handle_stmt(node)
+    def process_block(node, frontier: list[str], branch_label: str | None = None) -> list[str]:
+        if node is None:
+            return []
+        stmts = _iter_statement_nodes(node) if node.type == "compound_statement" else [node]
+        if not stmts:
+            return []
+        cur = frontier
+        first = True
+        for st in stmts:
+            cur = process_statement(st, cur, incoming_label=(branch_label if first else None))
+            first = False
+            if not cur:
+                break
+        return cur
 
-    # walk top-level statements
+    # Build from top-level statements
+    frontier = ["start"]
     for st in _iter_statement_nodes(body):
-        if prev == "end":
+        frontier = process_statement(st, frontier)
+        if not frontier:
             break
-        handle_stmt(st)
 
     # Normal fallthrough to End
-    if prev != "end":
-        b.add_edge(prev, "end")
+    if frontier:
+        connect(frontier, "end")
 
     sfm = b.to_json()
-    # Validate basic invariants
+    # Validate basic invariants (fail fast)
     starts = [n for n in sfm["nodes"] if n["id"] == "start"]
     ends = [n for n in sfm["nodes"] if n["id"] == "end"]
     if len(starts) != 1 or len(ends) < 1:
