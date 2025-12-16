@@ -239,6 +239,29 @@ def _ensure_start_end_terminators(mermaid: str) -> str:
     return "\n".join(lines).strip() + "\n"
 
 
+def _normalize_mermaid_common_syntax(mermaid: str) -> str:
+    """
+    Normalize Mermaid that some models output but Mermaid Live rejects.
+    - Convert terminators like start(["Start"]) -> start([Start])
+    - Convert decisions like d1{"cond?"} -> d1{cond?}
+    """
+    import re
+
+    out = mermaid
+
+    # start(["Start"]) / end(["End"]) -> start([Start]) / end([End])
+    out = re.sub(r'(\bstart)\(\["([^"]+)"\]\)', r"\1([\2])", out)
+    out = re.sub(r'(\bend)\(\["([^"]+)"\]\)', r"\1([\2])", out)
+
+    # Generic terminator with quoted label: id(["Label"]) -> id([Label])
+    out = re.sub(r'(\b[A-Za-z_][A-Za-z0-9_]*)\(\["([^"]+)"\]\)', r"\1([\2])", out)
+
+    # Decision with quoted label: id{"Label"} -> id{Label}
+    out = re.sub(r'(\b[A-Za-z_][A-Za-z0-9_]*)\{\s*"([^"]+)"\s*\}', r"\1{\2}", out)
+
+    return out
+
+
 def _validate_mermaid_shapes_only(mermaid: str) -> None:
     """
     Fail if the diagram contains untyped nodes or markdown/prose.
@@ -482,6 +505,7 @@ def _translate_sfm_with_llm(
     if not mermaid:
         return None
     try:
+        mermaid = _normalize_mermaid_common_syntax(mermaid)
         mermaid = _ensure_start_end_terminators(mermaid)
         _validate_mermaid_shapes_only(mermaid)
         return mermaid
