@@ -325,27 +325,51 @@ def _normalize_mermaid_linebreaks(mermaid: str) -> str:
     return "\n".join(final_lines).strip() + "\n"
 
 
-def _ensure_mermaid_semicolons(mermaid: str) -> str:
+def _sanitize_label(label: str) -> str:
     """
-    Mermaid supports ';' as a statement terminator. Adding it makes diagrams robust even if
-    line breaks are lost/collapsed during copy/paste (which otherwise produces parse errors
-    like: start([Start]) end([End]) ...).
+    Make Mermaid-safe, human-readable labels.
+    - Remove C++ operators/punctuation that can confuse Mermaid grammars.
+    - Prefer semantic text rather than raw code.
     """
-    mermaid = mermaid.replace("\r\n", "\n").replace("\r", "\n")
-    out: list[str] = []
-    for raw in mermaid.splitlines():
-        line = raw.rstrip()
-        if not line:
-            continue
-        if line.lstrip().startswith("flowchart"):
-            out.append(line.strip())
-            continue
-        # Keep existing semicolons; otherwise append.
-        stripped = line.strip()
-        if not stripped.endswith(";"):
-            line = line + ";"
-        out.append(line)
-    return "\n".join(out).strip() + "\n"
+    import re
+
+    s = label.strip()
+
+    # Common condition patterns -> semantic-ish
+    s = re.sub(r"\.empty\(\)\s*==\s*true", " empty", s)
+    s = re.sub(r"\.empty\(\)", " empty", s)
+    s = re.sub(r"\s*==\s*true\b", "", s)
+    s = re.sub(r"\s*==\s*false\b", " not", s)
+
+    # Return statements: keep the last token-ish as code (strip namespaces)
+    m = re.match(r"^return\s+(.+)$", s)
+    if m:
+        ret = m.group(1).strip().rstrip(";")
+        ret = ret.split("::")[-1]
+        s = f"Return {ret}"
+
+    # new/delete
+    if "new " in s:
+        s = "Create object"
+    if s.startswith("delete "):
+        s = "Free object"
+
+    # Strip namespace qualifiers in remaining text
+    s = re.sub(r"\b[A-Za-z_][A-Za-z0-9_]*::", "", s)
+
+    # Remove operators/punctuation that are risky in Mermaid node text
+    s = re.sub(r"[;:*!=<>|&%^~`]", " ", s)
+    s = re.sub(r"[()\[\]{}]", " ", s)
+    s = s.replace('"', "").replace("'", "")
+
+    # Collapse whitespace
+    s = " ".join(s.split())
+    if not s:
+        s = "Step"
+    # Keep labels short-ish
+    if len(s) > 60:
+        s = s[:57] + "..."
+    return s
 
 
 def _validate_mermaid_shapes_only(mermaid: str) -> None:
@@ -372,11 +396,6 @@ def _validate_mermaid_shapes_only(mermaid: str) -> None:
             except ValueError:
                 return None
             right = rest.strip()
-        # Allow trailing semicolons (statement terminators).
-        if left.endswith(";"):
-            left = left[:-1].strip()
-        if right.endswith(";"):
-            right = right[:-1].strip()
         # Reject inline node definitions in edges (e.g. end([End]) or x["lbl"]).
         if any(ch in left for ch in "[](){}\"/") or any(ch in right for ch in "[](){}\"/"):
             return None
@@ -545,37 +564,44 @@ class _SFMBuilder:
 
 
 def _sfm_to_mermaid(sfm: dict) -> str:
-    nodes = {n["id"]: n for n in sfm.get("nodes", [])}
+    # Remap start/end node ids to avoid Mermaid keyword collisions.
+    id_map: dict[str, str] = {"start": "startNode", "end": "endNode"}
+    nodes = {id_map.get(n["id"], n["id"]): {**n, "id": id_map.get(n["id"], n["id"])} for n in sfm.get("nodes", [])}
     edges = sfm.get("edges", [])
     lines: list[str] = ["flowchart TD"]
 
     # Declare nodes
     for nid, n in nodes.items():
         t = n.get("type")
-        lbl = _escape_label(str(n.get("label", "")))
+        lbl = _sanitize_label(str(n.get("label", "")))
         if t == "terminator":
             lines.append(f"  {nid}([{lbl}])")
         elif t == "decision":
+            # Decisions should be semantic, not full expressions.
             lines.append(f"  {nid}{{{lbl}}}")
         elif t == "io":
-            lines.append(f"  {nid}[/\"{lbl}\"/]")
+            lines.append(f"  {nid}[/{lbl}/]")
         else:
-            lines.append(f"  {nid}[\"{lbl}\"]")
+            lines.append(f"  {nid}[{lbl}]")
 
     # Declare edges
     for e in edges:
-        src = e["src"]
-        dst = e["dst"]
+        src = id_map.get(e["src"], e["src"])
+        dst = id_map.get(e["dst"], e["dst"])
         lab = e.get("label")
         if lab:
-            lines.append(f"  {src} -->|{_escape_label(str(lab))}| {dst}")
+            # Prefer robust label syntax:  A -- YES --> B
+            lines.append(f"  {src} -- {_sanitize_label(str(lab))} --> {dst}")
         else:
             lines.append(f"  {src} --> {dst}")
 
     mermaid = "\n".join(lines).strip() + "\n"
     mermaid = _normalize_mermaid_linebreaks(mermaid)
-    mermaid = _ensure_mermaid_semicolons(mermaid)
-    mermaid = _ensure_start_end_terminators(mermaid)
+    # Ensure start/end nodes exist with the new ids
+    if "startNode([" not in mermaid:
+        mermaid = mermaid.replace("flowchart TD\n", "flowchart TD\n  startNode([Start])\n", 1)
+    if "endNode([" not in mermaid:
+        mermaid = mermaid.rstrip() + "\n  endNode([End])\n"
     _validate_mermaid_shapes_only(mermaid)
     return mermaid
 
@@ -605,8 +631,7 @@ def _translate_sfm_with_llm(
     try:
         mermaid = _normalize_mermaid_common_syntax(mermaid)
         mermaid = _normalize_mermaid_linebreaks(mermaid)
-        mermaid = _ensure_mermaid_semicolons(mermaid)
-        mermaid = _ensure_start_end_terminators(mermaid)
+        # Translator output must still be safe; otherwise fall back to deterministic.
         _validate_mermaid_shapes_only(mermaid)
         return mermaid
     except Exception:

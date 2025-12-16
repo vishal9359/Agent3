@@ -109,7 +109,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_fc.add_argument(
         "--no_llm",
         action="store_true",
-        help="Do not use LLM translation; generate Mermaid directly from deterministic scenario model.",
+        help="Do not use LLM translation; generate Mermaid directly from deterministic scenario model (recommended).",
     )
     p_fc.add_argument(
         "--ollama_base_url",
