@@ -460,42 +460,162 @@ def _translate_sfm_with_llm(
         return None
 
 
-def _select_entry_function(source_bytes: bytes, root, entry_fn: str | None) -> tuple[str, object]:
+def _tokenize(s: str) -> set[str]:
+    import re
+
+    # Split on non-alnum and camelCase boundaries
+    s2 = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", s)
+    parts = re.split(r"[^a-zA-Z0-9]+", s2)
+    return {p.lower() for p in parts if p and len(p) >= 3}
+
+
+def _collect_functions(source_bytes: bytes, root) -> list[tuple[str, str, object, int]]:
+    """
+    Returns list of (short_name, qualified_name, node, approx_size_chars)
+    """
+    funcs: list[tuple[str, str, object, int]] = []
+
+    # Maintain a simple scope stack for namespaces/classes to build qualified names.
+    scope_stack: list[object] = []
+
+    stack: list[tuple[object, int]] = [(root, 0)]
+    while stack:
+        n, state = stack.pop()
+
+        is_scope = n.type in {
+            "namespace_definition",
+            "class_specifier",
+            "struct_specifier",
+            "union_specifier",
+        }
+
+        if state == 0:
+            if is_scope:
+                scope_stack.append(n)
+            if n.type in {"function_definition", "constructor_or_destructor_definition"}:
+                decl = n.child_by_field_name("declarator") or n.child_by_field_name("name")
+                name = _first_ident_text(source_bytes, decl) if decl is not None else None
+                if name:
+                    # Resolve scope names
+                    scopes: list[str] = []
+                    for sc in scope_stack:
+                        name_node = sc.child_by_field_name("name")
+                        if name_node is None:
+                            continue
+                        t = _node_text(source_bytes, name_node).strip()
+                        if t:
+                            scopes.append(t)
+                    qname = "::".join(scopes + [name]) if scopes else name
+
+                    body = n.child_by_field_name("body")
+                    size = 0
+                    if body is not None:
+                        try:
+                            size = max(0, body.end_byte - body.start_byte)
+                        except Exception:
+                            size = 0
+                    funcs.append((name, qname, n, size))
+
+            # Post-order marker
+            stack.append((n, 1))
+            for c in reversed(getattr(n, "children", [])):
+                stack.append((c, 0))
+        else:
+            if is_scope and scope_stack and scope_stack[-1] is n:
+                scope_stack.pop()
+
+    return funcs
+
+
+def _score_entry_candidate(
+    *,
+    scenario: str,
+    focus_path: Path,
+    short_name: str,
+    qualified_name: str,
+    size_bytes: int,
+) -> int:
+    score = 0
+
+    # Strong preference for main when present.
+    if short_name == "main":
+        score += 100
+
+    # Token overlap with scenario + filename.
+    scen_toks = _tokenize(scenario)
+    file_toks = _tokenize(focus_path.stem)
+    fn_toks = _tokenize(qualified_name)
+    overlap = (scen_toks | file_toks) & fn_toks
+    score += 5 * len(overlap)
+
+    # Common entry-like verbs.
+    entryish = {"execute", "run", "handle", "process", "start", "create", "open", "init", "parse"}
+    if any(t in fn_toks for t in entryish):
+        score += 12
+
+    # Bigger bodies are more likely to be scenario orchestration.
+    if size_bytes >= 2000:
+        score += 6
+    elif size_bytes >= 800:
+        score += 3
+
+    return score
+
+
+def _select_entry_function(
+    source_bytes: bytes,
+    root,
+    *,
+    scenario: str,
+    focus_path: Path,
+    entry_fn: str | None,
+) -> tuple[str, object]:
     """
     Return (function_name, function_node). Raises if ambiguous.
     """
-    funcs: list[tuple[str, object]] = []
+    funcs = _collect_functions(source_bytes, root)
 
-    stack = [root]
-    while stack:
-        n = stack.pop()
-        if n.type in {"function_definition", "constructor_or_destructor_definition"}:
-            decl = n.child_by_field_name("declarator") or n.child_by_field_name("name")
-            name = _first_ident_text(source_bytes, decl) if decl is not None else None
-            if name:
-                funcs.append((name, n))
-        for c in reversed(getattr(n, "children", [])):
-            stack.append(c)
+    if not funcs:
+        raise RuntimeError("No function definitions found in focus file.")
 
     if entry_fn:
-        for name, node in funcs:
-            if name == entry_fn:
-                return name, node
+        for short, qname, node, _sz in funcs:
+            if entry_fn == qname or entry_fn == short:
+                return qname, node
         raise RuntimeError(f"Entry function '{entry_fn}' not found in focus file.")
 
-    # Prefer main if present
-    for name, node in funcs:
-        if name == "main":
-            return name, node
-
     if len(funcs) == 1:
-        return funcs[0]
+        return funcs[0][1], funcs[0][2]
 
-    names = sorted({n for n, _ in funcs})
-    raise RuntimeError(
-        "Ambiguous entry function in focus file. Pass --entry_fn. "
-        f"Found: {', '.join(names[:30])}{'…' if len(names) > 30 else ''}"
-    )
+    scored: list[tuple[int, str, str, object]] = []
+    for short, qname, node, sz in funcs:
+        s = _score_entry_candidate(
+            scenario=scenario, focus_path=focus_path, short_name=short, qualified_name=qname, size_bytes=sz
+        )
+        scored.append((s, qname, short, node))
+
+    scored.sort(key=lambda x: (-x[0], x[1]))
+    best = scored[0]
+    second = scored[1] if len(scored) > 1 else None
+
+    # Confidence gate: refuse if we can't choose confidently.
+    if best[0] < 10:
+        tops = ", ".join([f"{s}:{q}" for s, q, _short, _node in scored[:10]])
+        raise RuntimeError(
+            "Unable to auto-detect scenario entry function confidently.\n"
+            "Please set --focus to a file that contains the scenario entrypoint (ideally one main function), "
+            "or optionally provide --entry_fn to override.\n"
+            f"Candidates (score:name): {tops}"
+        )
+    if second is not None and (best[0] - second[0]) <= 3:
+        tops = ", ".join([f"{s}:{q}" for s, q, _short, _node in scored[:10]])
+        raise RuntimeError(
+            "Ambiguous scenario entry function in focus file (auto-detection not confident).\n"
+            "Please set --focus to a narrower file, or optionally provide --entry_fn.\n"
+            f"Candidates (score:name): {tops}"
+        )
+
+    return best[1], best[3]
 
 
 def _iter_statement_nodes(block_node) -> list[object]:
@@ -739,7 +859,9 @@ def generate_scenario_flowchart_mermaid(
     tree = parser.parse(src_bytes)
     root = tree.root_node
 
-    _, fn_node = _select_entry_function(src_bytes, root, entry_fn)
+    _fn_name, fn_node = _select_entry_function(
+        src_bytes, root, scenario=scenario, focus_path=fp, entry_fn=entry_fn
+    )
 
     # Deterministic SFM (must succeed; otherwise fail fast).
     sfm = _build_sfm_from_function(source_bytes=src_bytes, fn_node=fn_node, max_steps=max_steps)

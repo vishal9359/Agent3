@@ -91,7 +91,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_fc.add_argument(
         "--entry_fn",
         default=None,
-        help="Entry function name inside --focus to build scenario flow from (required if multiple functions).",
+        help="Optional override: entry function name inside --focus (used only if auto-detection is ambiguous).",
     )
     p_fc.add_argument("--k", type=int, default=12, help="Retriever top-k for --scenario")
     p_fc.add_argument(
