@@ -434,16 +434,19 @@ def _validate_mermaid_shapes_only(mermaid: str) -> None:
                 raise ValueError("Mermaid output contains inline node definitions in an edge.")
             continue
         # Mermaid Live is sensitive to multiple statements on one line; forbid it.
-        # Count node declaration patterns: id([..]) / id[".."] / id[..] / id{..} / id[/.."/]
-        # Accept both quoted and unquoted process nodes: p1["Label"] and p1[Label]
-        node_decl_pat = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\s*(\(\[|\[\"|\[[^\]]|\[/\"|\{)")
+        # Count node declaration patterns:
+        # - id([Start]) terminator
+        # - id{Decision} decision
+        # - id["Process"] / id[Process] process
+        # - id[/"IO"/] / id[/IO/] I/O
+        node_decl_pat = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\s*(\(\[|\[\"|\[[^\]]|\[/\"|\[/|\{)")
         if len(node_decl_pat.findall(t)) > 1:
             raise ValueError("Mermaid output contains multiple node declarations on one line.")
         # Node declarations must include a shape marker.
         # Check for valid node patterns: id([...]) / id["..."] / id[...] / id{...} / id[/.../]
         # More precise: must have identifier followed by shape marker
         has_node_pattern = bool(
-            re.search(r"\b[A-Za-z_][A-Za-z0-9_]*\s*(\(\[|\[\"|\[[^\]]|\[/\"|\{)", t)
+            re.search(r"\b[A-Za-z_][A-Za-z0-9_]*\s*(\(\[|\[\"|\[[^\]]|\[/\"|\[/|\{)", t)
         )
         if not has_node_pattern:
             raise ValueError("Mermaid output contains an untyped node declaration.")
