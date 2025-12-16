@@ -325,6 +325,29 @@ def _normalize_mermaid_linebreaks(mermaid: str) -> str:
     return "\n".join(final_lines).strip() + "\n"
 
 
+def _ensure_mermaid_semicolons(mermaid: str) -> str:
+    """
+    Mermaid supports ';' as a statement terminator. Adding it makes diagrams robust even if
+    line breaks are lost/collapsed during copy/paste (which otherwise produces parse errors
+    like: start([Start]) end([End]) ...).
+    """
+    mermaid = mermaid.replace("\r\n", "\n").replace("\r", "\n")
+    out: list[str] = []
+    for raw in mermaid.splitlines():
+        line = raw.rstrip()
+        if not line:
+            continue
+        if line.lstrip().startswith("flowchart"):
+            out.append(line.strip())
+            continue
+        # Keep existing semicolons; otherwise append.
+        stripped = line.strip()
+        if not stripped.endswith(";"):
+            line = line + ";"
+        out.append(line)
+    return "\n".join(out).strip() + "\n"
+
+
 def _validate_mermaid_shapes_only(mermaid: str) -> None:
     """
     Fail if the diagram contains untyped nodes or markdown/prose.
@@ -546,6 +569,7 @@ def _sfm_to_mermaid(sfm: dict) -> str:
 
     mermaid = "\n".join(lines).strip() + "\n"
     mermaid = _normalize_mermaid_linebreaks(mermaid)
+    mermaid = _ensure_mermaid_semicolons(mermaid)
     mermaid = _ensure_start_end_terminators(mermaid)
     _validate_mermaid_shapes_only(mermaid)
     return mermaid
@@ -576,6 +600,7 @@ def _translate_sfm_with_llm(
     try:
         mermaid = _normalize_mermaid_common_syntax(mermaid)
         mermaid = _normalize_mermaid_linebreaks(mermaid)
+        mermaid = _ensure_mermaid_semicolons(mermaid)
         mermaid = _ensure_start_end_terminators(mermaid)
         _validate_mermaid_shapes_only(mermaid)
         return mermaid
