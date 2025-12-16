@@ -372,6 +372,11 @@ def _validate_mermaid_shapes_only(mermaid: str) -> None:
             except ValueError:
                 return None
             right = rest.strip()
+        # Allow trailing semicolons (statement terminators).
+        if left.endswith(";"):
+            left = left[:-1].strip()
+        if right.endswith(";"):
+            right = right[:-1].strip()
         # Reject inline node definitions in edges (e.g. end([End]) or x["lbl"]).
         if any(ch in left for ch in "[](){}\"/") or any(ch in right for ch in "[](){}\"/"):
             return None
