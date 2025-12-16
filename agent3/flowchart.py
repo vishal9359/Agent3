@@ -304,6 +304,11 @@ def _validate_mermaid_shapes_only(mermaid: str) -> None:
             if _parse_edge_endpoints(t) is None:
                 raise ValueError("Mermaid output contains inline node definitions in an edge.")
             continue
+        # Mermaid Live is sensitive to multiple statements on one line; forbid it.
+        # Count node declaration patterns like: id([..]) / id[".."] / id{..} / id[/".."/]
+        node_decl_pat = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\s*(\(\[|\[\"|\{|\[/\")")
+        if len(node_decl_pat.findall(t)) > 1:
+            raise ValueError("Mermaid output contains multiple node declarations on one line.")
         # Node declarations must include a shape marker.
         if not any(x in t for x in ('["', "([", "{", '[/"')):
             raise ValueError("Mermaid output contains an untyped node declaration.")
