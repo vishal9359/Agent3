@@ -68,6 +68,7 @@ python -m agent3 flowchart \
   --focus src/cli/create_volume_command.cpp \
   --detail high \
   --max_steps 32 \
+  --entry_fn CreateVolumeCommand::Execute \
   --model qwen3:8b
 ```
 

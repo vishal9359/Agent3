@@ -7,7 +7,6 @@ from pathlib import Path
 from agent3.cpp_callgraph import CallEdge, FunctionInfo, build_callgraph, resolve_edges
 from agent3.config import SETTINGS
 from agent3.ollama_compat import get_chat_ollama
-from agent3.vectorstore import get_vectorstore
 
 
 @dataclass(frozen=True)
@@ -184,49 +183,520 @@ def _count_mermaid_edges_nodes(mermaid: str) -> tuple[int, int]:
     return len([n for n in node_ids if n]), edges
 
 
-SCENARIO_SYSTEM_PROMPT = """You are a senior C++ engineer who draws scenario-driven flowcharts.
-You will be given a user scenario (what the user is trying to do) and code context snippets.
+SCENARIO_TRANSLATE_SYSTEM_PROMPT = """You are a diagram translator.
+You will receive a Scenario Flow Model (SFM) as JSON. The SFM is authoritative.
 
-Goal: output a Mermaid flowchart that looks like a whiteboard execution flow (Start/End, decisions, key steps),
-NOT a call graph. Model the runtime steps a user triggers for the scenario.
+Task: translate the SFM to Mermaid flowchart code ONLY.
 
-Flowchart symbol rules (MUST follow these Mermaid shapes):
-- Terminator (Start/End):   id([Label])
-- Process step:            id["Label"]
-- Decision/condition:      id{"Label?"}
-- Input/Output (optional): id[/"Label"/]
-
-Rules:
-- Output ONLY Mermaid (no prose), starting with: flowchart TD
-- Every node MUST be explicitly typed using one of the shapes above (no implicit nodes).
-- Must include Start and End terminators.
-- Use decision diamonds for branches, include YES/NO labels on edges where helpful.
-- Prefer many small, concrete steps over a few vague steps.
-- Include validation, error paths, and key side-effects (logging, RPC/API calls, state changes) when present in code.
-- If the context is insufficient, include a process node: need["Need: <file/function>"] then end.
+Output rules (STRICT):
+- Output ONLY Mermaid, starting with: flowchart TD
+- No markdown, no bullets, no headings, no explanations.
+- Use these shapes:
+  - Terminator: id([Label])
+  - Process:    id["Label"]
+  - Decision:   id{"Label?"}
+  - I/O:        id[/"Label"/]
+- Every node must be explicitly declared (typed) using one of the shapes above.
+- Edges may include labels using: -->|YES| or -->|NO| etc.
 """
+
+
+def _extract_mermaid_only(text: str) -> str | None:
+    """
+    Extract Mermaid flowchart block starting at the first 'flowchart'.
+    Returns None if no Mermaid found.
+    """
+    t = _strip_code_fences(text)
+    lines = t.splitlines()
+    start_idx = None
+    for i, line in enumerate(lines):
+        if line.lstrip().startswith("flowchart"):
+            start_idx = i
+            break
+    if start_idx is None:
+        return None
+    mermaid = "\n".join(lines[start_idx:]).strip()
+    # Reject obvious non-mermaid prose / markdown after extraction
+    bad_markers = ("###", "- **", "- ", "* ", "```")
+    for l in mermaid.splitlines():
+        if l.strip().startswith(bad_markers):
+            return None
+    return mermaid + "\n"
 
 
 def _ensure_start_end_terminators(mermaid: str) -> str:
     lines = mermaid.splitlines()
     if not lines:
         return "flowchart TD\n  start([Start])\n  end([End])\n"
-    # Ensure header
     if not lines[0].lstrip().startswith("flowchart"):
         lines = ["flowchart TD"] + lines
-
     s = "\n".join(lines)
-    # Ensure start/end nodes exist as terminators. We accept either explicit node
-    # declarations or inline definitions on edges.
     if "start([" not in s:
-        # Insert after header
         lines = [lines[0], "  start([Start])"] + lines[1:]
-    s = "\n".join(lines)
+        s = "\n".join(lines)
     if "end([" not in s:
         lines.append("  end([End])")
+    return "\n".join(lines).strip() + "\n"
 
-    out = "\n".join(lines).strip() + "\n"
+
+def _validate_mermaid_shapes_only(mermaid: str) -> None:
+    """
+    Fail if the diagram contains untyped nodes or markdown/prose.
+    This is intentionally strict to keep output deterministic.
+    """
+    for line in mermaid.splitlines():
+        t = line.strip()
+        if not t or t.startswith("%%") or t.startswith("flowchart"):
+            continue
+        if t.startswith(("#", "- ", "* ")):
+            raise ValueError("Mermaid output contains markdown/prose.")
+        # Accept edges and explicit node declarations only.
+        if "-->" in t:
+            continue
+        # Node declarations must include a shape marker.
+        if not any(x in t for x in ('["', "([", "{", '[/"')):
+            raise ValueError("Mermaid output contains an untyped node declaration.")
+
+
+def _set_parser_language(parser) -> None:
+    """
+    Minimal tree-sitter-cpp language setup (mirrors agent3.cpp_callgraph behavior).
+    """
+    from tree_sitter import Language
+    from tree_sitter_cpp import language as cpp_language
+
+    raw = cpp_language()
+    if isinstance(raw, Language):
+        lang = raw
+    else:
+        lang = Language(raw)  # type: ignore[arg-type]
+
+    if hasattr(parser, "set_language"):
+        parser.set_language(lang)  # type: ignore[attr-defined]
+    else:
+        parser.language = lang  # type: ignore[assignment]
+
+
+def _node_text(source_bytes: bytes, node) -> str:
+    return source_bytes[node.start_byte : node.end_byte].decode("utf-8", errors="ignore")
+
+
+def _first_ident_text(source_bytes: bytes, node) -> str | None:
+    """
+    Best-effort identifier extraction from a declarator subtree.
+    """
+    stack = [node]
+    while stack:
+        n = stack.pop()
+        if n is None:
+            continue
+        if n.type in {
+            "identifier",
+            "field_identifier",
+            "type_identifier",
+            "namespace_identifier",
+            "scoped_identifier",
+        }:
+            t = _node_text(source_bytes, n).strip()
+            return t if t else None
+        if n.type == "qualified_identifier":
+            for c in reversed(n.children):
+                if c.type in {"identifier", "field_identifier"}:
+                    t = _node_text(source_bytes, c).strip()
+                    if t:
+                        return t
+        for c in reversed(n.children):
+            stack.append(c)
+    return None
+
+
+def _normalize_ws(s: str, limit: int = 140) -> str:
+    out = " ".join(s.replace("\t", " ").split())
+    return out if len(out) <= limit else out[: limit - 1] + "…"
+
+
+def _callee_name_from_call(source_bytes: bytes, call_node) -> str | None:
+    fn = call_node.child_by_field_name("function")
+    if fn is None:
+        return None
+    # identifier / field_expression / qualified_identifier
+    if fn.type in {"identifier", "field_identifier"}:
+        t = _node_text(source_bytes, fn).strip()
+        return t if t else None
+    if fn.type == "field_expression":
+        for c in reversed(fn.children):
+            if c.type in {"field_identifier", "identifier"}:
+                t = _node_text(source_bytes, c).strip()
+                if t:
+                    return t
+    return _first_ident_text(source_bytes, fn)
+
+
+def _is_noise_call(name: str) -> bool:
+    n = name.lower()
+    noise = (
+        "log",
+        "spdlog",
+        "printf",
+        "fprintf",
+        "cout",
+        "cerr",
+        "trace",
+        "metric",
+        "stats",
+        "telemetry",
+        "debug",
+        "info",
+        "warn",
+        "error",
+    )
+    return any(tok in n for tok in noise)
+
+
+class _SFMBuilder:
+    def __init__(self, *, max_steps: int):
+        self.max_steps = max_steps
+        self.nodes: dict[str, dict] = {}
+        self.edges: list[dict] = []
+        self._i = 0
+        self._steps = 0
+
+        self.add_node("start", "terminator", "Start")
+        self.add_node("end", "terminator", "End")
+
+    def _new_id(self, prefix: str) -> str:
+        self._i += 1
+        return f"{prefix}{self._i}"
+
+    def add_node(self, node_id: str, node_type: str, label: str) -> str:
+        self.nodes[node_id] = {"id": node_id, "type": node_type, "label": label}
+        return node_id
+
+    def add_process(self, label: str) -> str:
+        if self._steps >= self.max_steps:
+            return "end"
+        self._steps += 1
+        nid = self._new_id("p")
+        return self.add_node(nid, "process", label)
+
+    def add_decision(self, label: str) -> str:
+        if self._steps >= self.max_steps:
+            return "end"
+        self._steps += 1
+        nid = self._new_id("d")
+        return self.add_node(nid, "decision", label)
+
+    def add_edge(self, src: str, dst: str, label: str | None = None) -> None:
+        e = {"src": src, "dst": dst}
+        if label:
+            e["label"] = label
+        self.edges.append(e)
+
+    def to_json(self) -> dict:
+        return {"nodes": list(self.nodes.values()), "edges": self.edges}
+
+
+def _sfm_to_mermaid(sfm: dict) -> str:
+    nodes = {n["id"]: n for n in sfm.get("nodes", [])}
+    edges = sfm.get("edges", [])
+    lines: list[str] = ["flowchart TD"]
+
+    # Declare nodes
+    for nid, n in nodes.items():
+        t = n.get("type")
+        lbl = _escape_label(str(n.get("label", "")))
+        if t == "terminator":
+            lines.append(f"  {nid}([{lbl}])")
+        elif t == "decision":
+            lines.append(f"  {nid}{{{lbl}}}")
+        elif t == "io":
+            lines.append(f"  {nid}[/\"{lbl}\"/]")
+        else:
+            lines.append(f"  {nid}[\"{lbl}\"]")
+
+    # Declare edges
+    for e in edges:
+        src = e["src"]
+        dst = e["dst"]
+        lab = e.get("label")
+        if lab:
+            lines.append(f"  {src} -->|{_escape_label(str(lab))}| {dst}")
+        else:
+            lines.append(f"  {src} --> {dst}")
+
+    mermaid = "\n".join(lines).strip() + "\n"
+    mermaid = _ensure_start_end_terminators(mermaid)
+    _validate_mermaid_shapes_only(mermaid)
+    return mermaid
+
+
+def _translate_sfm_with_llm(
+    *,
+    sfm: dict,
+    max_steps: int,
+    chat_model: str,
+    ollama_base_url: str,
+) -> str | None:
+    """
+    LLM is allowed ONLY after SFM exists. If the LLM violates output rules, return None.
+    """
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    llm = get_chat_ollama(model=chat_model, base_url=ollama_base_url)
+    user_msg = (
+        "Scenario Flow Model (JSON):\n"
+        f"{sfm}\n\n"
+        f"Constraint: keep ~<= {max_steps} steps.\n"
+    )
+    resp = llm.invoke([SystemMessage(content=SCENARIO_TRANSLATE_SYSTEM_PROMPT), HumanMessage(content=user_msg)])
+    mermaid = _extract_mermaid_only(getattr(resp, "content", str(resp)) or "")
+    if not mermaid:
+        return None
+    try:
+        mermaid = _ensure_start_end_terminators(mermaid)
+        _validate_mermaid_shapes_only(mermaid)
+        return mermaid
+    except Exception:
+        return None
+
+
+def _select_entry_function(source_bytes: bytes, root, entry_fn: str | None) -> tuple[str, object]:
+    """
+    Return (function_name, function_node). Raises if ambiguous.
+    """
+    funcs: list[tuple[str, object]] = []
+
+    stack = [root]
+    while stack:
+        n = stack.pop()
+        if n.type in {"function_definition", "constructor_or_destructor_definition"}:
+            decl = n.child_by_field_name("declarator") or n.child_by_field_name("name")
+            name = _first_ident_text(source_bytes, decl) if decl is not None else None
+            if name:
+                funcs.append((name, n))
+        for c in reversed(getattr(n, "children", [])):
+            stack.append(c)
+
+    if entry_fn:
+        for name, node in funcs:
+            if name == entry_fn:
+                return name, node
+        raise RuntimeError(f"Entry function '{entry_fn}' not found in focus file.")
+
+    # Prefer main if present
+    for name, node in funcs:
+        if name == "main":
+            return name, node
+
+    if len(funcs) == 1:
+        return funcs[0]
+
+    names = sorted({n for n, _ in funcs})
+    raise RuntimeError(
+        "Ambiguous entry function in focus file. Pass --entry_fn. "
+        f"Found: {', '.join(names[:30])}{'…' if len(names) > 30 else ''}"
+    )
+
+
+def _iter_statement_nodes(block_node) -> list[object]:
+    # compound_statement children include '{', '}' and statements; keep statement-like children.
+    out: list[object] = []
+    for c in getattr(block_node, "children", []):
+        if c.type in {"{", "}"}:
+            continue
+        out.append(c)
     return out
+
+
+def _stmt_is_call_expr(stmt) -> object | None:
+    # expression_statement -> call_expression
+    if stmt.type == "expression_statement":
+        for c in stmt.children:
+            if c.type == "call_expression":
+                return c
+    return None
+
+
+def _build_sfm_from_function(
+    *,
+    source_bytes: bytes,
+    fn_node,
+    max_steps: int,
+) -> dict:
+    b = _SFMBuilder(max_steps=max_steps)
+
+    body = fn_node.child_by_field_name("body")
+    if body is None:
+        raise RuntimeError("Selected entry function has no body.")
+
+    prev = "start"
+
+    def add_step(label: str) -> None:
+        nonlocal prev
+        nid = b.add_process(label)
+        b.add_edge(prev, nid)
+        prev = nid
+
+    def add_return(label: str) -> None:
+        nonlocal prev
+        nid = b.add_process(label)
+        b.add_edge(prev, nid)
+        b.add_edge(nid, "end")
+        prev = nid
+
+    def handle_stmt(stmt) -> None:
+        nonlocal prev
+        if b._steps >= b.max_steps:
+            b.add_edge(prev, "end")
+            prev = "end"
+            return
+
+        # if (...) { ... } else { ... }
+        if stmt.type == "if_statement":
+            cond = stmt.child_by_field_name("condition")
+            cond_txt = _normalize_ws(_node_text(source_bytes, cond)) if cond is not None else "condition"
+            d = b.add_decision(cond_txt.rstrip("?") + "?")
+            b.add_edge(prev, d)
+
+            merge = b.add_process("Continue")
+
+            cons = stmt.child_by_field_name("consequence")
+            alt = stmt.child_by_field_name("alternative")
+
+            # THEN branch
+            prev = d
+            if cons is not None:
+                _handle_stmt_or_block(cons, edge_label="YES")
+            else:
+                b.add_edge(d, merge, "YES")
+            # if branch ended at end, skip merge edge
+            if prev != "end":
+                b.add_edge(prev, merge)
+
+            # ELSE
+            prev = d
+            if alt is not None:
+                _handle_stmt_or_block(alt, edge_label="NO")
+                if prev != "end":
+                    b.add_edge(prev, merge)
+            else:
+                b.add_edge(d, merge, "NO")
+
+            prev = merge
+            return
+
+        # return ...
+        if stmt.type == "return_statement":
+            txt = _normalize_ws(_node_text(source_bytes, stmt))
+            add_return(txt if txt else "Return")
+            prev = "end"
+            return
+
+        if stmt.type in {"throw_statement"}:
+            txt = _normalize_ws(_node_text(source_bytes, stmt))
+            add_return(txt if txt else "Throw")
+            prev = "end"
+            return
+
+        # while/for loops (simplified)
+        if stmt.type in {"while_statement", "for_statement"}:
+            cond = stmt.child_by_field_name("condition")
+            cond_txt = _normalize_ws(_node_text(source_bytes, cond)) if cond is not None else "loop condition"
+            d = b.add_decision(cond_txt.rstrip("?") + "?")
+            b.add_edge(prev, d)
+            merge = b.add_process("Continue")
+
+            body_n = stmt.child_by_field_name("body")
+            if body_n is not None:
+                prev = d
+                _handle_stmt_or_block(body_n, edge_label="YES")
+                if prev != "end":
+                    b.add_edge(prev, d, "loop")
+            b.add_edge(d, merge, "NO")
+            prev = merge
+            return
+
+        # switch_statement
+        if stmt.type == "switch_statement":
+            val = stmt.child_by_field_name("value")
+            val_txt = _normalize_ws(_node_text(source_bytes, val)) if val is not None else "switch"
+            d = b.add_decision(f"{val_txt}?")
+            b.add_edge(prev, d)
+            merge = b.add_process("Continue")
+            body_n = stmt.child_by_field_name("body")
+            if body_n is not None:
+                # Very simplified: treat each case as a branch to merge.
+                for c in body_n.children:
+                    if c.type in {"case_statement", "default_statement"}:
+                        lab = _normalize_ws(_node_text(source_bytes, c.children[0])) if c.children else "case"
+                        prev = d
+                        b.add_edge(d, merge, lab)
+                b.add_edge(d, merge, "default")
+            prev = merge
+            return
+
+        # calls / assignments / declarations as process steps
+        call = _stmt_is_call_expr(stmt)
+        if call is not None:
+            callee = _callee_name_from_call(source_bytes, call) or "call"
+            if _is_noise_call(callee):
+                return
+            add_step(f"Call {callee}()")
+            return
+
+        if stmt.type in {"declaration"}:
+            txt = _normalize_ws(_node_text(source_bytes, stmt))
+            add_step(txt)
+            return
+
+        if stmt.type in {"expression_statement"}:
+            txt = _normalize_ws(_node_text(source_bytes, stmt))
+            if txt:
+                add_step(txt)
+            return
+
+        # Fallback: keep a compact representation
+        txt = _normalize_ws(_node_text(source_bytes, stmt))
+        if txt:
+            add_step(txt)
+
+    def _handle_stmt_or_block(node, *, edge_label: str | None = None) -> None:
+        nonlocal prev
+        # Connect from current prev to first node in this branch with label
+        if node.type == "compound_statement":
+            stmts = _iter_statement_nodes(node)
+            if not stmts:
+                return
+            first = stmts[0]
+            # create a tiny "branch" anchor
+            anchor = b.add_process("Branch")
+            b.add_edge(prev, anchor, edge_label)
+            prev = anchor
+            for st in stmts:
+                handle_stmt(st)
+        else:
+            anchor = b.add_process("Branch")
+            b.add_edge(prev, anchor, edge_label)
+            prev = anchor
+            handle_stmt(node)
+
+    # walk top-level statements
+    for st in _iter_statement_nodes(body):
+        if prev == "end":
+            break
+        handle_stmt(st)
+
+    # Normal fallthrough to End
+    if prev != "end":
+        b.add_edge(prev, "end")
+
+    sfm = b.to_json()
+    # Validate basic invariants
+    starts = [n for n in sfm["nodes"] if n["id"] == "start"]
+    ends = [n for n in sfm["nodes"] if n["id"] == "end"]
+    if len(starts) != 1 or len(ends) < 1:
+        raise RuntimeError("Failed to build a valid Scenario Flow Model (missing Start/End).")
+    return sfm
 
 
 def generate_scenario_flowchart_mermaid(
@@ -235,85 +705,59 @@ def generate_scenario_flowchart_mermaid(
     scenario: str,
     collection: str | None = None,
     focus: Path | None = None,
+    entry_fn: str | None = None,
     k: int = 12,
     detail: str = "high",
     max_steps: int = 26,
+    use_llm: bool = True,
     chat_model: str | None = None,
     embed_model: str | None = None,
     ollama_base_url: str | None = None,
 ) -> MermaidGraph:
     """
-    Generate a scenario-driven (execution) flowchart using LLM + code context.
-    - If `collection` is provided, uses indexed retrieval.
-    - If `focus` is provided, injects that file's full content first (highest signal).
+    Scenario-driven flowchart:
+    - Build deterministic Scenario Flow Model (SFM) from AST + control structures.
+    - If SFM cannot be built, FAIL FAST and DO NOT call the LLM.
+    - Optionally translate SFM -> Mermaid using the LLM (translator only); otherwise do deterministic translation.
     """
-    from langchain_core.documents import Document
-    from langchain_core.messages import HumanMessage, SystemMessage
-
     project_path = project_path.resolve()
     base_url = ollama_base_url or SETTINGS.ollama_base_url
-    llm = get_chat_ollama(model=chat_model or SETTINGS.ollama_chat_model, base_url=base_url)
+    if focus is None:
+        raise RuntimeError("Scenario flowchart requires --focus to build a deterministic Scenario Flow Model.")
 
-    docs: list[Document] = []
-    if focus is not None:
-        fp = (project_path / focus).resolve() if not focus.is_absolute() else focus.resolve()
-        try:
-            text = fp.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            text = ""
-        rel = str(fp.relative_to(project_path)).replace("\\", "/") if project_path in fp.parents else str(fp)
-        if text:
-            docs.append(Document(page_content=text, metadata={"relpath": rel, "source": str(fp)}))
+    fp = (project_path / focus).resolve() if not focus.is_absolute() else focus.resolve()
+    try:
+        source = fp.read_text(encoding="utf-8", errors="ignore")
+    except OSError as e:
+        raise RuntimeError(f"Unable to read focus file: {fp}") from e
 
-    if collection:
-        vs = get_vectorstore(collection, embed_model=embed_model, ollama_base_url=base_url)
-        # Pull a bit more than k if focus wasn't provided.
-        kk = k if docs else max(k, 16)
-        try:
-            docs.extend(vs.similarity_search(f"{scenario}\nFOCUS: {focus or ''}", k=kk))
-        except Exception:
-            pass
-        # Try MMR for diversity.
-        try:
-            mmr = getattr(vs, "max_marginal_relevance_search", None)
-            if callable(mmr):
-                docs.extend(mmr(f"{scenario}\nFOCUS: {focus or ''}", k=kk, fetch_k=max(32, kk * 4)))
-        except Exception:
-            pass
+    from tree_sitter import Parser
 
-    # Dedupe by relpath + content hash
-    seen: set[tuple[str, int]] = set()
-    deduped: list[Document] = []
-    for d in docs:
-        src = str(d.metadata.get("relpath") or d.metadata.get("source") or "unknown")
-        key = (src, hash(d.page_content))
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(d)
+    parser = Parser()
+    _set_parser_language(parser)
+    src_bytes = source.encode("utf-8", errors="ignore")
+    tree = parser.parse(src_bytes)
+    root = tree.root_node
 
-    context = _format_context_for_llm(deduped)
-    # Map detail to guidance.
-    detail_guidance = {
-        "low": "Aim for ~8-12 nodes focusing on major stages only.",
-        "medium": "Aim for ~14-20 nodes including validations and key calls.",
-        "high": "Aim for ~20-35 nodes including validations, branching, and key sub-steps.",
-    }.get(detail, "Aim for ~20-35 nodes including validations, branching, and key sub-steps.")
+    _, fn_node = _select_entry_function(src_bytes, root, entry_fn)
 
-    user_msg = (
-        f"Scenario:\n{scenario}\n\n"
-        f"Constraints:\n- Detail: {detail} ({detail_guidance})\n- Max steps: {max_steps}\n\n"
-        f"Project root:\n{project_path}\n\nContext:\n{context}\n"
-    )
-    resp = llm.invoke([SystemMessage(content=SCENARIO_SYSTEM_PROMPT), HumanMessage(content=user_msg)])
-    mermaid = _strip_code_fences(getattr(resp, "content", str(resp)))
-    if not mermaid.lstrip().startswith("flowchart"):
-        mermaid = "flowchart TD\n" + mermaid.strip() + "\n"
+    # Deterministic SFM (must succeed; otherwise fail fast).
+    sfm = _build_sfm_from_function(source_bytes=src_bytes, fn_node=fn_node, max_steps=max_steps)
 
-    mermaid = _ensure_start_end_terminators(mermaid)
+    # Translate SFM -> Mermaid (LLM optional, translator-only).
+    mermaid: str | None = None
+    if use_llm:
+        mermaid = _translate_sfm_with_llm(
+            sfm=sfm,
+            max_steps=max_steps,
+            chat_model=chat_model or SETTINGS.ollama_chat_model,
+            ollama_base_url=base_url,
+        )
+    if not mermaid:
+        mermaid = _sfm_to_mermaid(sfm)
 
     nodes, edges = _count_mermaid_edges_nodes(mermaid)
-    return MermaidGraph(mermaid=mermaid if mermaid.endswith("\n") else mermaid + "\n", node_count=nodes, edge_count=edges)
+    return MermaidGraph(mermaid=mermaid, node_count=nodes, edge_count=edges)
 
 
 def write_scenario_flowchart(
@@ -323,9 +767,11 @@ def write_scenario_flowchart(
     scenario: str,
     collection: str | None = None,
     focus: Path | None = None,
+    entry_fn: str | None = None,
     k: int = 12,
     detail: str = "high",
     max_steps: int = 26,
+    use_llm: bool = True,
     chat_model: str | None = None,
     embed_model: str | None = None,
     ollama_base_url: str | None = None,
@@ -335,9 +781,11 @@ def write_scenario_flowchart(
         scenario=scenario,
         collection=collection,
         focus=focus,
+        entry_fn=entry_fn,
         k=k,
         detail=detail,
         max_steps=max_steps,
+        use_llm=use_llm,
         chat_model=chat_model,
         embed_model=embed_model,
         ollama_base_url=ollama_base_url,

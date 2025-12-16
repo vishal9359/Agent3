@@ -88,6 +88,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Focus file (relative to --project_path or absolute) to include fully in context for --scenario.",
     )
+    p_fc.add_argument(
+        "--entry_fn",
+        default=None,
+        help="Entry function name inside --focus to build scenario flow from (required if multiple functions).",
+    )
     p_fc.add_argument("--k", type=int, default=12, help="Retriever top-k for --scenario")
     p_fc.add_argument(
         "--detail",
@@ -100,6 +105,11 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=26,
         help="Approx max number of steps/nodes for --scenario (default: 26).",
+    )
+    p_fc.add_argument(
+        "--no_llm",
+        action="store_true",
+        help="Do not use LLM translation; generate Mermaid directly from deterministic scenario model.",
     )
     p_fc.add_argument(
         "--ollama_base_url",
@@ -167,9 +177,11 @@ def main(argv: list[str] | None = None) -> int:
                 scenario=args.scenario,
                 collection=args.collection,
                 focus=args.focus,
+                entry_fn=args.entry_fn,
                 k=args.k,
                 detail=args.detail,
                 max_steps=args.max_steps,
+                use_llm=not args.no_llm,
                 ollama_base_url=args.ollama_base_url,
                 chat_model=args.chat_model,
                 embed_model=args.embed_model,
