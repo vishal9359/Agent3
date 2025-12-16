@@ -244,6 +244,32 @@ def _validate_mermaid_shapes_only(mermaid: str) -> None:
     Fail if the diagram contains untyped nodes or markdown/prose.
     This is intentionally strict to keep output deterministic.
     """
+    import re
+
+    def _is_bare_id(s: str) -> bool:
+        return re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", s) is not None
+
+    def _parse_edge_endpoints(t: str) -> tuple[str, str] | None:
+        if "-->" not in t:
+            return None
+        left, right = t.split("-->", 1)
+        left = left.strip()
+        right = right.strip()
+        # Handle edge labels:  a -->|YES| b
+        if right.startswith("|"):
+            # find closing pipe
+            try:
+                _, rest = right[1:].split("|", 1)
+            except ValueError:
+                return None
+            right = rest.strip()
+        # Reject inline node definitions in edges (e.g. end([End]) or x["lbl"]).
+        if any(ch in left for ch in "[](){}\"/") or any(ch in right for ch in "[](){}\"/"):
+            return None
+        if not _is_bare_id(left) or not _is_bare_id(right):
+            return None
+        return left, right
+
     for line in mermaid.splitlines():
         t = line.strip()
         if not t or t.startswith("%%") or t.startswith("flowchart"):
@@ -252,6 +278,8 @@ def _validate_mermaid_shapes_only(mermaid: str) -> None:
             raise ValueError("Mermaid output contains markdown/prose.")
         # Accept edges and explicit node declarations only.
         if "-->" in t:
+            if _parse_edge_endpoints(t) is None:
+                raise ValueError("Mermaid output contains inline node definitions in an edge.")
             continue
         # Node declarations must include a shape marker.
         if not any(x in t for x in ('["', "([", "{", '[/"')):
@@ -374,14 +402,15 @@ class _SFMBuilder:
 
     def add_process(self, label: str) -> str:
         if self._steps >= self.max_steps:
-            return "end"
+            # Signal "stop" to callers; they must terminate.
+            return ""
         self._steps += 1
         nid = self._new_id("p")
         return self.add_node(nid, "process", label)
 
     def add_decision(self, label: str) -> str:
         if self._steps >= self.max_steps:
-            return "end"
+            return ""
         self._steps += 1
         nid = self._new_id("d")
         return self.add_node(nid, "decision", label)
@@ -653,16 +682,28 @@ def _build_sfm_from_function(
 
     def add_step(label: str) -> None:
         nonlocal prev
+        if prev == "end":
+            return
         nid = b.add_process(label)
+        if not nid:
+            b.add_edge(prev, "end")
+            prev = "end"
+            return
         b.add_edge(prev, nid)
         prev = nid
 
     def add_return(label: str) -> None:
         nonlocal prev
+        if prev == "end":
+            return
         nid = b.add_process(label)
+        if not nid:
+            b.add_edge(prev, "end")
+            prev = "end"
+            return
         b.add_edge(prev, nid)
         b.add_edge(nid, "end")
-        prev = nid
+        prev = "end"
 
     def handle_stmt(stmt) -> None:
         nonlocal prev
@@ -676,9 +717,18 @@ def _build_sfm_from_function(
             cond = stmt.child_by_field_name("condition")
             cond_txt = _normalize_ws(_node_text(source_bytes, cond)) if cond is not None else "condition"
             d = b.add_decision(cond_txt.rstrip("?") + "?")
+            if not d:
+                b.add_edge(prev, "end")
+                prev = "end"
+                return
             b.add_edge(prev, d)
 
             merge = b.add_process("Continue")
+            if not merge:
+                # No room to model; terminate.
+                b.add_edge(d, "end")
+                prev = "end"
+                return
 
             cons = stmt.child_by_field_name("consequence")
             alt = stmt.child_by_field_name("alternative")
@@ -782,6 +832,8 @@ def _build_sfm_from_function(
 
     def _handle_stmt_or_block(node, *, edge_label: str | None = None) -> None:
         nonlocal prev
+        if prev == "end":
+            return
         # Connect from current prev to first node in this branch with label
         if node.type == "compound_statement":
             stmts = _iter_statement_nodes(node)
@@ -790,12 +842,20 @@ def _build_sfm_from_function(
             first = stmts[0]
             # create a tiny "branch" anchor
             anchor = b.add_process("Branch")
+            if not anchor:
+                b.add_edge(prev, "end", edge_label)
+                prev = "end"
+                return
             b.add_edge(prev, anchor, edge_label)
             prev = anchor
             for st in stmts:
                 handle_stmt(st)
         else:
             anchor = b.add_process("Branch")
+            if not anchor:
+                b.add_edge(prev, "end", edge_label)
+                prev = "end"
+                return
             b.add_edge(prev, anchor, edge_label)
             prev = anchor
             handle_stmt(node)
