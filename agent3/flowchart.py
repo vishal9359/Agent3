@@ -262,6 +262,69 @@ def _normalize_mermaid_common_syntax(mermaid: str) -> str:
     return out
 
 
+def _normalize_mermaid_linebreaks(mermaid: str) -> str:
+    """
+    Ensure Mermaid Live-friendly formatting: one statement per line.
+    In practice, some generators collapse multiple node declarations onto one line, which Mermaid Live rejects.
+    """
+    import re
+
+    # Normalize newlines to \n first.
+    mermaid = mermaid.replace("\r\n", "\n").replace("\r", "\n")
+
+    node_decl_pat = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\s*(\(\[|\[\"|\{|\[/\")")
+
+    out_lines: list[str] = []
+    for raw in mermaid.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+
+        # Force header to be exactly "flowchart TD"
+        if line.startswith("flowchart"):
+            # Keep only first two tokens (flowchart + direction); drop extras onto next line.
+            toks = line.split()
+            if len(toks) >= 2:
+                out_lines.append(f"{toks[0]} {toks[1]}")
+                rest = " ".join(toks[2:]).strip()
+                if rest:
+                    # Process remainder as a normal line
+                    line = rest
+                else:
+                    continue
+            else:
+                out_lines.append(line)
+                continue
+
+        # If it is an edge, keep as-is.
+        if "-->" in line:
+            out_lines.append(line)
+            continue
+
+        # Split multiple node declarations on one line into separate lines.
+        matches = list(node_decl_pat.finditer(line))
+        if len(matches) <= 1:
+            out_lines.append(line)
+            continue
+
+        # Split at each subsequent match start.
+        starts = [m.start() for m in matches]
+        starts.append(len(line))
+        for i in range(len(matches)):
+            seg = line[starts[i] : starts[i + 1]].strip()
+            if seg:
+                out_lines.append(seg)
+
+    # Indent non-header lines for readability
+    final_lines: list[str] = []
+    for i, l in enumerate(out_lines):
+        if i == 0 and l.startswith("flowchart"):
+            final_lines.append(l)
+        else:
+            final_lines.append("  " + l if not l.startswith("  ") else l)
+    return "\n".join(final_lines).strip() + "\n"
+
+
 def _validate_mermaid_shapes_only(mermaid: str) -> None:
     """
     Fail if the diagram contains untyped nodes or markdown/prose.
@@ -482,6 +545,7 @@ def _sfm_to_mermaid(sfm: dict) -> str:
             lines.append(f"  {src} --> {dst}")
 
     mermaid = "\n".join(lines).strip() + "\n"
+    mermaid = _normalize_mermaid_linebreaks(mermaid)
     mermaid = _ensure_start_end_terminators(mermaid)
     _validate_mermaid_shapes_only(mermaid)
     return mermaid
@@ -511,6 +575,7 @@ def _translate_sfm_with_llm(
         return None
     try:
         mermaid = _normalize_mermaid_common_syntax(mermaid)
+        mermaid = _normalize_mermaid_linebreaks(mermaid)
         mermaid = _ensure_start_end_terminators(mermaid)
         _validate_mermaid_shapes_only(mermaid)
         return mermaid
