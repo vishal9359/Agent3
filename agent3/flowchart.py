@@ -383,19 +383,33 @@ def _validate_mermaid_shapes_only(mermaid: str) -> None:
         return re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", s) is not None
 
     def _parse_edge_endpoints(t: str) -> tuple[str, str] | None:
+        # Handle both:  A --> B  and  A -- YES --> B
         if "-->" not in t:
             return None
-        left, right = t.split("-->", 1)
-        left = left.strip()
-        right = right.strip()
-        # Handle edge labels:  a -->|YES| b
-        if right.startswith("|"):
-            # find closing pipe
-            try:
-                _, rest = right[1:].split("|", 1)
-            except ValueError:
+        # Check for labeled edge: A -- LABEL --> B
+        if " -- " in t and " --> " in t:
+            parts = t.split(" --> ", 1)
+            if len(parts) == 2:
+                left_part = parts[0]
+                right = parts[1].strip()
+                if " -- " in left_part:
+                    left = left_part.split(" -- ", 1)[0].strip()
+                else:
+                    left = left_part.strip()
+            else:
                 return None
-            right = rest.strip()
+        else:
+            left, right = t.split("-->", 1)
+            left = left.strip()
+            right = right.strip()
+            # Handle edge labels:  a -->|YES| b
+            if right.startswith("|"):
+                # find closing pipe
+                try:
+                    _, rest = right[1:].split("|", 1)
+                except ValueError:
+                    return None
+                right = rest.strip()
         # Reject inline node definitions in edges (e.g. end([End]) or x["lbl"]).
         if any(ch in left for ch in "[](){}\"/") or any(ch in right for ch in "[](){}\"/"):
             return None
@@ -415,12 +429,18 @@ def _validate_mermaid_shapes_only(mermaid: str) -> None:
                 raise ValueError("Mermaid output contains inline node definitions in an edge.")
             continue
         # Mermaid Live is sensitive to multiple statements on one line; forbid it.
-        # Count node declaration patterns like: id([..]) / id[".."] / id{..} / id[/".."/]
-        node_decl_pat = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\s*(\(\[|\[\"|\{|\[/\")")
+        # Count node declaration patterns: id([..]) / id[".."] / id[..] / id{..} / id[/.."/]
+        # Accept both quoted and unquoted process nodes: p1["Label"] and p1[Label]
+        node_decl_pat = re.compile(r"\b[A-Za-z_][A-Za-z0-9_]*\s*(\(\[|\[\"|\[[^\]]|\[/\"|\{)")
         if len(node_decl_pat.findall(t)) > 1:
             raise ValueError("Mermaid output contains multiple node declarations on one line.")
         # Node declarations must include a shape marker.
-        if not any(x in t for x in ('["', "([", "{", '[/"')):
+        # Check for valid node patterns: id([...]) / id["..."] / id[...] / id{...} / id[/.../]
+        # More precise: must have identifier followed by shape marker
+        has_node_pattern = bool(
+            re.search(r"\b[A-Za-z_][A-Za-z0-9_]*\s*(\(\[|\[\"|\[[^\]]|\[/\"|\{)", t)
+        )
+        if not has_node_pattern:
             raise ValueError("Mermaid output contains an untyped node declaration.")
 
 
@@ -865,6 +885,8 @@ def _build_sfm_from_function(
         if stmt.type == "if_statement":
             cond = stmt.child_by_field_name("condition")
             cond_txt = _normalize_ws(_node_text(source_bytes, cond)) if cond is not None else "condition"
+            # Sanitize condition text before using in decision node
+            cond_txt = _sanitize_label(cond_txt)
             d = b.add_decision(cond_txt.rstrip("?") + "?")
             if not d:
                 b.add_edge(prev, "end")
@@ -921,6 +943,7 @@ def _build_sfm_from_function(
         if stmt.type in {"while_statement", "for_statement"}:
             cond = stmt.child_by_field_name("condition")
             cond_txt = _normalize_ws(_node_text(source_bytes, cond)) if cond is not None else "loop condition"
+            cond_txt = _sanitize_label(cond_txt)
             d = b.add_decision(cond_txt.rstrip("?") + "?")
             b.add_edge(prev, d)
             merge = b.add_process("Continue")
@@ -939,6 +962,7 @@ def _build_sfm_from_function(
         if stmt.type == "switch_statement":
             val = stmt.child_by_field_name("value")
             val_txt = _normalize_ws(_node_text(source_bytes, val)) if val is not None else "switch"
+            val_txt = _sanitize_label(val_txt)
             d = b.add_decision(f"{val_txt}?")
             b.add_edge(prev, d)
             merge = b.add_process("Continue")
