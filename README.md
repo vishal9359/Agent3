@@ -179,59 +179,135 @@ python -m agent5 flowchart \
 - `flowchart.mmd` - Mermaid flowchart diagram
 - `flowchart.scenario.json` - Scenario understanding (entry points, files, steps)
 
-#### Mode 2: Single Function (Legacy)
+#### Mode 2: Entry-Point Specified Scenario
 
-Generate flowchart from a specific function in a file:
+Generate a scenario flowchart starting from a specific entry function:
+
+⚠️ **CRITICAL UNDERSTANDING: `--file` vs `--project-path`**
+
+**Common Misconception:**
+- ❌ **WRONG:** `--file` limits analysis to that single file
+- ✅ **CORRECT:** `--file` is ONLY used to locate the entry function
+
+**How it actually works:**
+
+| Parameter | Purpose |
+|-----------|---------|
+| `--file` + `--function` | **Entry point locator** (where to start) |
+| `--project-path` | **Analysis scope** (what to analyze) |
 
 ```bash
+# RECOMMENDED: With project path for cross-file analysis
 python -m agent5 flowchart \
-  --file src/handler.cpp \
-  --out handler_flow.mmd \
-  --function handleRequest
+  --file src/manager.cpp \
+  --function CreateVolume \
+  --project-path /path/to/project \
+  --detail-level medium \
+  --out create_volume_flow.mmd
 ```
+
+This will:
+- ✅ Start from `CreateVolume()` in `manager.cpp`
+- ✅ Follow calls to `validator.cpp`, `storage.cpp`, etc.
+- ✅ Include cross-file validations and state changes
+- ❌ **NOT** limited to `manager.cpp` only
+
+**⚠️ WARNING: Without `--project-path`:**
+```bash
+# LIMITED SCOPE: Analysis restricted to single file only
+python -m agent5 flowchart \
+  --file src/manager.cpp \
+  --function CreateVolume \
+  --out limited_flow.mmd
+```
+Result: Shallow, incomplete flowchart (not recommended for documentation!)
 
 **Auto-detect entry function:**
 
 ```bash
 python -m agent5 flowchart \
   --file src/handler.cpp \
+  --project-path /path/to/project \
   --out handler_flow.mmd
 ```
 
-**With detail level (v3+):**
+**Detail Levels (v3+):**
 
+The `--detail-level` parameter **structurally changes** the flowchart complexity:
+
+**`high`: Architecture Overview**
 ```bash
-# High detail: Top-level business steps only
 python -m agent5 flowchart \
   --file src/handler.cpp \
-  --out handler_flow_high.mmd \
-  --detail-level high
+  --project-path /path/to/project \
+  --detail-level high \
+  --out handler_high.mmd
+```
+- Only major business operations
+- Minimal decision points
+- Suitable for executives/architects
 
-# Medium detail: Include validations, decisions (default)
-python -m agent5 flowchart \
-  --file src/handler.cpp \
-  --out handler_flow_medium.mmd \
-  --detail-level medium
+Example output:
+```
+Start → Parse → Validate → Process → Store → End
+```
 
-# Deep detail: Expand critical sub-operations
+**`medium`: Documentation Quality (DEFAULT)**
+```bash
 python -m agent5 flowchart \
   --file src/handler.cpp \
-  --out handler_flow_deep.mmd \
-  --detail-level deep
+  --project-path /path/to/project \
+  --detail-level medium \
+  --out handler_medium.mmd
+```
+- All validations included
+- All decision points shown
+- All state-changing operations
+- Suitable for developer documentation
+
+Example output:
+```
+Start → Parse args → Validate format → Check quota
+  → Allocate resource → Update state → Log success → End
+```
+
+**`deep`: Deep Analysis**
+```bash
+python -m agent5 flowchart \
+  --file src/handler.cpp \
+  --project-path /path/to/project \
+  --detail-level deep \
+  --out handler_deep.mmd
+```
+- Expands critical sub-operations (lookups, reads, loads)
+- Shows internal validation steps
+- Expands control-flow affecting operations
+- Still excludes logging/metrics/utilities
+- Suitable for debugging and detailed documentation
+
+Example output:
+```
+Start → Parse args → Validate format → Validate range
+  → Check user quota → Lookup storage pool → Read pool metadata
+  → Allocate space → Initialize resource → Register in index
+  → Update state → Log success → End
 ```
 
 **File Mode Options:**
-- `--file`: Input C++ source file (required)
-- `--out`: Output .mmd file path (required)
+- `--file`: **Entry file** (locates where scenario starts) — REQUIRED
 - `--function`: Entry function name (auto-detect if omitted)
-- `--detail-level`: Detail level - `high|medium|deep` (default: medium, v3+)
+- `--project-path`: **Analysis scope** (enables cross-file analysis) — STRONGLY RECOMMENDED!
+- `--detail-level`: `high` | `medium` | `deep` (default: `medium`)
+- `--out`: Output .mmd file path — REQUIRED
 - `--max_steps`: Maximum steps in flowchart (default: 30)
 - `--use_llm`: Use LLM for Mermaid translation (optional)
 
-**Detail Levels (v3):**
-- **high**: Only top-level business steps (minimal, for executives/architects)
-- **medium**: Include validations, decisions, state changes (default, for developers)
-- **deep**: Expand critical sub-operations (detailed, for debugging/documentation)
+**Key Rules:**
+- ✅ Different detail levels produce structurally different flowcharts
+- ✅ Entry file ≠ analysis scope
+- ✅ Always provide `--project-path` for proper documentation
+- ✅ Scenario-based flow (NOT function-call diagram)
+- ✅ Deterministic AST analysis (no LLM guessing)
 
 ### Viewing Flowcharts
 

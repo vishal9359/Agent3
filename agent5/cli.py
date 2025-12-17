@@ -139,13 +139,22 @@ def build_parser() -> argparse.ArgumentParser:
     flowchart_parser.add_argument(
         "--function",
         default=None,
-        help="[File mode] Name of the entry function (auto-detect if not specified)",
+        help="[File mode] Entry function name (auto-detect if not specified)",
     )
     flowchart_parser.add_argument(
         "--detail-level",
         choices=["high", "medium", "deep"],
         default="medium",
         help="[File mode] Detail level: high (top-level only), medium (default), deep (expanded sub-operations)",
+    )
+    
+    # WARNING: --project-path is CRITICAL for proper analysis in file mode!
+    # Without it, analysis is limited to the entry file only.
+    flowchart_parser.add_argument(
+        "--project-path",
+        type=_path,
+        default=None,
+        help="[File mode] Project root path - REQUIRED for cross-file scenario analysis (recommended!)",
     )
     
     # Scenario mode options
@@ -292,29 +301,36 @@ def main(argv: list[str] | None = None) -> int:
                 console.print()
                 
             else:
-                # File mode: Single function flowchart
+                # File mode: Entry-point specified flowchart
                 from agent5.flowchart import write_flowchart
                 
-                console.print(f"[cyan]Mode:[/cyan] Single Function")
-                console.print(f"[cyan]Input:[/cyan] {args.file}")
-                console.print(f"[cyan]Output:[/cyan] {args.out}")
+                console.print(f"[cyan]Mode:[/cyan] Entry-Point Scenario")
+                console.print(f"[cyan]Entry file:[/cyan] {args.file}")
                 
                 if args.function:
-                    console.print(f"[cyan]Function:[/cyan] {args.function}")
+                    console.print(f"[cyan]Entry function:[/cyan] {args.function}")
                 else:
-                    console.print("[cyan]Function:[/cyan] Auto-detect")
+                    console.print("[cyan]Entry function:[/cyan] Auto-detect")
+                
+                if args.project_path:
+                    console.print(f"[cyan]Analysis scope:[/cyan] {args.project_path} (entire project)")
+                else:
+                    console.print(f"[cyan]Analysis scope:[/cyan] {args.file.parent} (file directory - WARNING: Limited!)")
                 
                 console.print(f"[cyan]Detail level:[/cyan] {args.detail_level}")
                 console.print(f"[cyan]Max steps:[/cyan] {args.max_steps}")
-                console.print(f"[cyan]Use LLM:[/cyan] {args.use_llm}")
+                console.print(f"[cyan]Output:[/cyan] {args.out}")
                 console.print()
                 
-                console.print("[yellow]Extracting Scenario Flow Model (SFM)...[/yellow]")
+                console.print("[yellow]Step 1: Locating entry point...[/yellow]")
+                console.print("[yellow]Step 2: Extracting scenario flow across project...[/yellow]")
+                console.print("[yellow]Step 3: Building Scenario Flow Model (SFM)...[/yellow]")
                 
                 flowchart = write_flowchart(
                     output_path=args.out,
                     file_path=args.file,
                     function_name=args.function,
+                    project_path=args.project_path,
                     max_steps=args.max_steps,
                     detail_level=args.detail_level,
                     use_llm=args.use_llm,

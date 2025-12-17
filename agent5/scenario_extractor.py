@@ -246,6 +246,8 @@ def _classify_call(callee: str, detail_level: DetailLevel = DetailLevel.MEDIUM) 
     """
     Classify a function call into a semantic action based on detail level.
     
+    CRITICAL: Detail level MUST produce structural differences in the flowchart!
+    
     Args:
         callee: Function name
         detail_level: Level of detail to include
@@ -256,12 +258,21 @@ def _classify_call(callee: str, detail_level: DetailLevel = DetailLevel.MEDIUM) 
     Scenario boundary rule: Include only business-relevant calls.
     Collapse the call into a single semantic step (never descend).
     
-    Categories:
-    - business: Core business logic (always included)
-    - validation: Input/data validation (included in medium+)
-    - state: State-changing operations (included in medium+)
-    - critical: Critical sub-operations (included in deep only)
-    - utility: Utility functions (never included)
+    Categories and inclusion rules:
+    - business: Core business logic
+      * HIGH: Only major business operations (create, execute, handle, process)
+      * MEDIUM+: All business operations
+    - validation: Input/data validation
+      * HIGH: EXCLUDED
+      * MEDIUM+: INCLUDED
+    - state: State-changing operations  
+      * HIGH: Only major state changes (create, delete, init)
+      * MEDIUM+: All state changes
+    - critical: Critical sub-operations (lookups, reads, loads)
+      * HIGH: EXCLUDED
+      * MEDIUM: EXCLUDED
+      * DEEP: INCLUDED
+    - utility: Utility functions (NEVER included)
     """
     c = callee.strip()
     lc = c.lower()
@@ -270,19 +281,25 @@ def _classify_call(callee: str, detail_level: DetailLevel = DetailLevel.MEDIUM) 
     if not c or _is_noise_call(c):
         return False, "", "utility"
     
-    # Categorize by verb patterns
-    business_verbs = [
-        ("create", "Create", "business"),
-        ("make", "Create", "business"),
-        ("build", "Build", "business"),
-        ("execute", "Execute", "business"),
-        ("run", "Run", "business"),
-        ("handle", "Handle", "business"),
-        ("process", "Process", "business"),
-        ("send", "Send", "business"),
-        ("receive", "Receive", "business"),
+    # HIGH level: ONLY major business operations
+    major_business_verbs = [
+        ("create", "Create", "business_major"),
+        ("execute", "Execute", "business_major"),
+        ("handle", "Handle", "business_major"),
+        ("process", "Process", "business_major"),
     ]
     
+    # MEDIUM level: More business operations  
+    minor_business_verbs = [
+        ("make", "Create", "business_minor"),
+        ("build", "Build", "business_minor"),
+        ("run", "Run", "business_minor"),
+        ("send", "Send", "business_minor"),
+        ("receive", "Receive", "business_minor"),
+        ("perform", "Perform", "business_minor"),
+    ]
+    
+    # MEDIUM+ level: Validations
     validation_verbs = [
         ("parse", "Parse", "validation"),
         ("check", "Validate", "validation"),
@@ -291,33 +308,46 @@ def _classify_call(callee: str, detail_level: DetailLevel = DetailLevel.MEDIUM) 
         ("verify", "Validate", "validation"),
     ]
     
-    state_verbs = [
-        ("set", "Set", "state"),
-        ("update", "Update", "state"),
-        ("add", "Add", "state"),
-        ("insert", "Insert", "state"),
-        ("remove", "Remove", "state"),
-        ("delete", "Delete", "state"),
-        ("erase", "Erase", "state"),
-        ("open", "Open", "state"),
-        ("close", "Close", "state"),
-        ("init", "Initialize", "state"),
-        ("start", "Start", "state"),
-        ("stop", "Stop", "state"),
-        ("save", "Save", "state"),
-        ("write", "Write", "state"),
+    # HIGH level: Major state changes only
+    major_state_verbs = [
+        ("create", "Create", "state_major"),  # Duplicate with business, but check state context
+        ("delete", "Delete", "state_major"),
+        ("init", "Initialize", "state_major"),
+        ("destroy", "Destroy", "state_major"),
     ]
     
+    # MEDIUM+ level: All state changes
+    minor_state_verbs = [
+        ("set", "Set", "state_minor"),
+        ("update", "Update", "state_minor"),
+        ("add", "Add", "state_minor"),
+        ("insert", "Insert", "state_minor"),
+        ("remove", "Remove", "state_minor"),
+        ("erase", "Erase", "state_minor"),
+        ("open", "Open", "state_minor"),
+        ("close", "Close", "state_minor"),
+        ("start", "Start", "state_minor"),
+        ("stop", "Stop", "state_minor"),
+        ("save", "Save", "state_minor"),
+        ("write", "Write", "state_minor"),
+    ]
+    
+    # DEEP level ONLY: Critical sub-operations
     critical_verbs = [
         ("get", "Lookup", "critical"),
         ("fetch", "Fetch", "critical"),
         ("retrieve", "Retrieve", "critical"),
         ("read", "Read", "critical"),
         ("load", "Load", "critical"),
+        ("query", "Query", "critical"),
+        ("lookup", "Lookup", "critical"),
+        ("find", "Find", "critical"),
     ]
     
     # Try to match and categorize
-    all_verbs = business_verbs + validation_verbs + state_verbs + critical_verbs
+    all_verbs = (major_business_verbs + minor_business_verbs + 
+                 validation_verbs + major_state_verbs + 
+                 minor_state_verbs + critical_verbs)
     
     for key, verb, category in all_verbs:
         if key in lc:
@@ -327,14 +357,26 @@ def _classify_call(callee: str, detail_level: DetailLevel = DetailLevel.MEDIUM) 
             obj = re.sub(r"[_\-]+", " ", obj)
             obj = " ".join(obj.split()).strip()
             
-            # Determine if we should include based on detail level
+            # STRICT inclusion rules based on detail level
             include = False
-            if category == "business":
-                include = True  # Always include business logic
-            elif category in {"validation", "state"}:
-                include = detail_level in {DetailLevel.MEDIUM, DetailLevel.DEEP}
-            elif category == "critical":
-                include = detail_level == DetailLevel.DEEP
+            
+            if detail_level == DetailLevel.HIGH:
+                # HIGH: ONLY major business and major state operations
+                if category in {"business_major", "state_major"}:
+                    include = True
+                # Everything else: EXCLUDED
+                
+            elif detail_level == DetailLevel.MEDIUM:
+                # MEDIUM: Business + validations + state (but NOT critical)
+                if category in {"business_major", "business_minor", 
+                               "validation", "state_major", "state_minor"}:
+                    include = True
+                # critical: EXCLUDED
+                
+            elif detail_level == DetailLevel.DEEP:
+                # DEEP: Include everything except utility
+                if category != "utility":
+                    include = True
             
             label = f"{verb} {obj}".strip() if obj else verb
             return include, label, category
@@ -389,24 +431,33 @@ def _should_include_declaration(text: str, detail_level: DetailLevel = DetailLev
     """
     Check if a declaration should be included in the scenario based on detail level.
     
+    CRITICAL: Must produce structural differences based on detail level!
+    
     Scenario boundary rule: Include argument parsing, config, important state.
     """
     t = text.lower()
     
-    # HIGH: Only top-level initializations
+    # HIGH: ONLY top-level configurations (very selective)
     if detail_level == DetailLevel.HIGH:
-        high_keywords = ("config", "manager", "service", "controller")
-        return any(kw in t for kw in high_keywords)
+        high_keywords = ("config", "manager", "service", "controller", "handler")
+        # Must match AND be an initialization/assignment
+        if any(kw in t for kw in high_keywords):
+            # Only if it looks like initialization (has '=' or 'new')
+            return ('=' in text or 'new ' in text.lower())
+        return False
     
-    # MEDIUM: Include validations and state
+    # MEDIUM: Include arguments, parameters, return values
     if detail_level == DetailLevel.MEDIUM:
-        medium_keywords = ("argv", "argc", "arg", "option", "param", "config", "ret", "result", "status")
+        medium_keywords = ("argv", "argc", "arg", "option", "param", "config", 
+                          "ret", "result", "status", "error", "manager", "handler")
         return any(kw in t for kw in medium_keywords)
     
-    # DEEP: Include more details
+    # DEEP: Include more details (data structures, buffers, contexts)
     if detail_level == DetailLevel.DEEP:
-        deep_keywords = ("argv", "argc", "arg", "option", "param", "config", "ret", "result", "status", 
-                        "data", "buffer", "request", "response", "context")
+        deep_keywords = ("argv", "argc", "arg", "option", "param", "config", 
+                        "ret", "result", "status", "error",
+                        "data", "buffer", "request", "response", "context", 
+                        "ptr", "obj", "item", "entry", "record")
         return any(kw in t for kw in deep_keywords)
     
     return False

@@ -351,6 +351,7 @@ def write_flowchart(
     file_path: Path,
     function_name: str | None = None,
     *,
+    project_path: Path | None = None,
     max_steps: int = 30,
     detail_level: str = "medium",
     use_llm: bool = False,
@@ -360,10 +361,14 @@ def write_flowchart(
     """
     Generate and write a flowchart to a file.
     
+    IMPORTANT: file_path is ONLY for locating the entry point function.
+               project_path defines the analysis scope for cross-file scenarios.
+    
     Args:
         output_path: Path to output .mmd file
-        file_path: Path to input C++ file
+        file_path: Path to entry file (for locating entry function ONLY)
         function_name: Entry function name
+        project_path: Project root - defines analysis scope (RECOMMENDED!)
         max_steps: Maximum steps
         detail_level: Detail level (high|medium|deep)
         use_llm: Use LLM for translation
@@ -372,7 +377,14 @@ def write_flowchart(
         
     Returns:
         MermaidFlowchart
+        
+    Note:
+        - file_path + function_name = entry point locator
+        - project_path = analysis scope
+        - Without project_path, analysis is limited to single file
     """
+    # TODO: Use project_path for cross-file scenario analysis
+    # For now, single-file analysis only (to be enhanced)
     flowchart = generate_flowchart_from_file(
         file_path,
         function_name=function_name,
