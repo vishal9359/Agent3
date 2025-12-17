@@ -13,16 +13,30 @@ Key Principles:
 - FAIL FAST: If SFM cannot be built reliably, refuse to proceed
 - SEMANTIC: Collapse function calls into semantic actions
 - BOUNDED: Include only scenario-relevant nodes (exclude logging, metrics, utilities)
+
+Detail Levels (v3):
+- HIGH: Only top-level business steps (minimal detail)
+- MEDIUM: Include validations, decisions, state-changing operations (default)
+- DEEP: Expand critical sub-operations affecting control flow or persistent state
 """
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
 from tree_sitter import Language, Node, Parser
 from tree_sitter_cpp import language as cpp_language
+
+
+class DetailLevel(Enum):
+    """Detail level for scenario extraction."""
+    
+    HIGH = "high"  # Only top-level business steps
+    MEDIUM = "medium"  # Include validations, decisions, state changes (default)
+    DEEP = "deep"  # Expand critical sub-operations
 
 
 @dataclass
@@ -228,60 +242,84 @@ def _is_noise_call(name: str) -> bool:
     return any(kw in n for kw in noise_keywords)
 
 
-def _classify_call(callee: str) -> tuple[bool, str]:
+def _classify_call(callee: str, detail_level: DetailLevel = DetailLevel.MEDIUM) -> tuple[bool, str, str]:
     """
-    Classify a function call into a semantic action.
+    Classify a function call into a semantic action based on detail level.
     
+    Args:
+        callee: Function name
+        detail_level: Level of detail to include
+        
     Returns:
-        (include: bool, semantic_label: str)
+        (include: bool, semantic_label: str, category: str)
         
     Scenario boundary rule: Include only business-relevant calls.
     Collapse the call into a single semantic step (never descend).
+    
+    Categories:
+    - business: Core business logic (always included)
+    - validation: Input/data validation (included in medium+)
+    - state: State-changing operations (included in medium+)
+    - critical: Critical sub-operations (included in deep only)
+    - utility: Utility functions (never included)
     """
     c = callee.strip()
     lc = c.lower()
     
+    # Always exclude noise
     if not c or _is_noise_call(c):
-        return False, ""
+        return False, "", "utility"
     
-    # Map common verbs to semantic actions
-    verb_map = [
-        ("parse", "Parse"),
-        ("check", "Validate"),
-        ("validate", "Validate"),
-        ("isvalid", "Validate"),
-        ("verify", "Validate"),
-        ("get", "Lookup"),
-        ("fetch", "Fetch"),
-        ("retrieve", "Retrieve"),
-        ("set", "Set"),
-        ("update", "Update"),
-        ("add", "Add"),
-        ("insert", "Insert"),
-        ("remove", "Remove"),
-        ("delete", "Delete"),
-        ("erase", "Erase"),
-        ("create", "Create"),
-        ("make", "Create"),
-        ("build", "Build"),
-        ("open", "Open"),
-        ("close", "Close"),
-        ("init", "Initialize"),
-        ("start", "Start"),
-        ("stop", "Stop"),
-        ("execute", "Execute"),
-        ("run", "Run"),
-        ("handle", "Handle"),
-        ("process", "Process"),
-        ("send", "Send"),
-        ("receive", "Receive"),
-        ("read", "Read"),
-        ("write", "Write"),
-        ("load", "Load"),
-        ("save", "Save"),
+    # Categorize by verb patterns
+    business_verbs = [
+        ("create", "Create", "business"),
+        ("make", "Create", "business"),
+        ("build", "Build", "business"),
+        ("execute", "Execute", "business"),
+        ("run", "Run", "business"),
+        ("handle", "Handle", "business"),
+        ("process", "Process", "business"),
+        ("send", "Send", "business"),
+        ("receive", "Receive", "business"),
     ]
     
-    for key, verb in verb_map:
+    validation_verbs = [
+        ("parse", "Parse", "validation"),
+        ("check", "Validate", "validation"),
+        ("validate", "Validate", "validation"),
+        ("isvalid", "Validate", "validation"),
+        ("verify", "Validate", "validation"),
+    ]
+    
+    state_verbs = [
+        ("set", "Set", "state"),
+        ("update", "Update", "state"),
+        ("add", "Add", "state"),
+        ("insert", "Insert", "state"),
+        ("remove", "Remove", "state"),
+        ("delete", "Delete", "state"),
+        ("erase", "Erase", "state"),
+        ("open", "Open", "state"),
+        ("close", "Close", "state"),
+        ("init", "Initialize", "state"),
+        ("start", "Start", "state"),
+        ("stop", "Stop", "state"),
+        ("save", "Save", "state"),
+        ("write", "Write", "state"),
+    ]
+    
+    critical_verbs = [
+        ("get", "Lookup", "critical"),
+        ("fetch", "Fetch", "critical"),
+        ("retrieve", "Retrieve", "critical"),
+        ("read", "Read", "critical"),
+        ("load", "Load", "critical"),
+    ]
+    
+    # Try to match and categorize
+    all_verbs = business_verbs + validation_verbs + state_verbs + critical_verbs
+    
+    for key, verb, category in all_verbs:
         if key in lc:
             # Extract object from function name
             obj = re.sub(key, "", c, flags=re.IGNORECASE)
@@ -289,13 +327,20 @@ def _classify_call(callee: str) -> tuple[bool, str]:
             obj = re.sub(r"[_\-]+", " ", obj)
             obj = " ".join(obj.split()).strip()
             
-            if obj:
-                return True, f"{verb} {obj}".strip()
-            else:
-                return True, verb
+            # Determine if we should include based on detail level
+            include = False
+            if category == "business":
+                include = True  # Always include business logic
+            elif category in {"validation", "state"}:
+                include = detail_level in {DetailLevel.MEDIUM, DetailLevel.DEEP}
+            elif category == "critical":
+                include = detail_level == DetailLevel.DEEP
+            
+            label = f"{verb} {obj}".strip() if obj else verb
+            return include, label, category
     
-    # Default: exclude unknown calls (treat as utility)
-    return False, ""
+    # Default: treat as utility, exclude
+    return False, "", "utility"
 
 
 def _get_identifier(source_bytes: bytes, node: Node | None) -> str | None:
@@ -340,15 +385,31 @@ def _extract_callee_name(source_bytes: bytes, call_node: Node) -> str | None:
     return _get_identifier(source_bytes, fn)
 
 
-def _should_include_declaration(text: str) -> bool:
+def _should_include_declaration(text: str, detail_level: DetailLevel = DetailLevel.MEDIUM) -> bool:
     """
-    Check if a declaration should be included in the scenario.
+    Check if a declaration should be included in the scenario based on detail level.
     
     Scenario boundary rule: Include argument parsing, config, important state.
     """
     t = text.lower()
-    include_keywords = ("argv", "argc", "arg", "option", "param", "config", "ret", "result", "status")
-    return any(kw in t for kw in include_keywords)
+    
+    # HIGH: Only top-level initializations
+    if detail_level == DetailLevel.HIGH:
+        high_keywords = ("config", "manager", "service", "controller")
+        return any(kw in t for kw in high_keywords)
+    
+    # MEDIUM: Include validations and state
+    if detail_level == DetailLevel.MEDIUM:
+        medium_keywords = ("argv", "argc", "arg", "option", "param", "config", "ret", "result", "status")
+        return any(kw in t for kw in medium_keywords)
+    
+    # DEEP: Include more details
+    if detail_level == DetailLevel.DEEP:
+        deep_keywords = ("argv", "argc", "arg", "option", "param", "config", "ret", "result", "status", 
+                        "data", "buffer", "request", "response", "context")
+        return any(kw in t for kw in deep_keywords)
+    
+    return False
 
 
 class SFMBuilder:
@@ -358,8 +419,9 @@ class SFMBuilder:
     Implements deterministic, rule-based extraction with strict validation.
     """
     
-    def __init__(self, max_steps: int = 30):
+    def __init__(self, max_steps: int = 30, detail_level: DetailLevel = DetailLevel.MEDIUM):
         self.max_steps = max_steps
+        self.detail_level = detail_level
         self.nodes: dict[str, SFMNode] = {}
         self.edges: list[SFMEdge] = []
         self._counter = 0
@@ -427,6 +489,7 @@ def extract_scenario_from_function(
     function_name: str | None = None,
     *,
     max_steps: int = 30,
+    detail_level: DetailLevel = DetailLevel.MEDIUM,
 ) -> ScenarioFlowModel:
     """
     Extract a Scenario Flow Model from a C++ function.
@@ -437,6 +500,7 @@ def extract_scenario_from_function(
         source_code: C++ source code
         function_name: Name of the entry function (auto-detect if None)
         max_steps: Maximum number of steps in the scenario
+        detail_level: Level of detail (HIGH, MEDIUM, DEEP)
         
     Returns:
         ScenarioFlowModel
@@ -487,7 +551,7 @@ def extract_scenario_from_function(
         raise RuntimeError(error_msg)
     
     # Build SFM from the function
-    builder = SFMBuilder(max_steps=max_steps)
+    builder = SFMBuilder(max_steps=max_steps, detail_level=detail_level)
     _extract_from_function_body(src_bytes, fn_node, builder)
     
     return builder.build()
@@ -851,7 +915,7 @@ def _process_expression(
     if call:
         callee = _extract_callee_name(source_bytes, call)
         if callee:
-            include, label = _classify_call(callee)
+            include, label, category = _classify_call(callee, builder.detail_level)
             if include:
                 nid = builder.add_process(_sanitize_label(label))
                 if not nid:
@@ -874,7 +938,7 @@ def _process_declaration(
     """Process a declaration statement."""
     text = _normalize_ws(_node_text(source_bytes, stmt))
     
-    if not _should_include_declaration(text):
+    if not _should_include_declaration(text, builder.detail_level):
         return frontier
     
     label = _sanitize_label(text)

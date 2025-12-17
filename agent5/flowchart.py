@@ -226,6 +226,7 @@ def generate_scenario_flowchart(
     function_name: str | None = None,
     *,
     max_steps: int = 30,
+    detail_level: str = "medium",
     use_llm: bool = False,
     chat_model: str | None = None,
     ollama_base_url: str | None = None,
@@ -242,6 +243,7 @@ def generate_scenario_flowchart(
         source_code: C++ source code
         function_name: Entry function name (auto-detect if None)
         max_steps: Maximum steps in the scenario
+        detail_level: Detail level (high|medium|deep)
         use_llm: Use LLM for translation (optional)
         chat_model: Chat model name
         ollama_base_url: Ollama base URL
@@ -252,11 +254,23 @@ def generate_scenario_flowchart(
     Raises:
         RuntimeError: If SFM cannot be built (FAIL FAST)
     """
+    from agent5.scenario_extractor import DetailLevel
+    
+    # Convert string to enum
+    detail_enum = DetailLevel.MEDIUM  # default
+    if detail_level:
+        detail_level_lower = detail_level.lower()
+        if detail_level_lower == "high":
+            detail_enum = DetailLevel.HIGH
+        elif detail_level_lower == "deep":
+            detail_enum = DetailLevel.DEEP
+    
     # Step 1: Extract SFM (REQUIRED, FAIL FAST)
     sfm = extract_scenario_from_function(
         source_code,
         function_name=function_name,
         max_steps=max_steps,
+        detail_level=detail_enum,
     )
     
     # Step 2: Translate to Mermaid
@@ -290,6 +304,7 @@ def generate_flowchart_from_file(
     function_name: str | None = None,
     *,
     max_steps: int = 30,
+    detail_level: str = "medium",
     use_llm: bool = False,
     chat_model: str | None = None,
     ollama_base_url: str | None = None,
@@ -301,6 +316,7 @@ def generate_flowchart_from_file(
         file_path: Path to C++ file
         function_name: Entry function name (auto-detect if None)
         max_steps: Maximum steps
+        detail_level: Detail level (high|medium|deep)
         use_llm: Use LLM for translation
         chat_model: Chat model name
         ollama_base_url: Ollama base URL
@@ -323,6 +339,7 @@ def generate_flowchart_from_file(
         source_code,
         function_name=function_name,
         max_steps=max_steps,
+        detail_level=detail_level,
         use_llm=use_llm,
         chat_model=chat_model,
         ollama_base_url=ollama_base_url,
@@ -335,6 +352,7 @@ def write_flowchart(
     function_name: str | None = None,
     *,
     max_steps: int = 30,
+    detail_level: str = "medium",
     use_llm: bool = False,
     chat_model: str | None = None,
     ollama_base_url: str | None = None,
@@ -347,6 +365,7 @@ def write_flowchart(
         file_path: Path to input C++ file
         function_name: Entry function name
         max_steps: Maximum steps
+        detail_level: Detail level (high|medium|deep)
         use_llm: Use LLM for translation
         chat_model: Chat model name
         ollama_base_url: Ollama base URL
@@ -358,6 +377,7 @@ def write_flowchart(
         file_path,
         function_name=function_name,
         max_steps=max_steps,
+        detail_level=detail_level,
         use_llm=use_llm,
         chat_model=chat_model,
         ollama_base_url=ollama_base_url,
