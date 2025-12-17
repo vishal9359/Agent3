@@ -141,6 +141,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="[File mode] Name of the entry function (auto-detect if not specified)",
     )
+    flowchart_parser.add_argument(
+        "--detail-level",
+        choices=["high", "medium", "deep"],
+        default="medium",
+        help="[File mode] Detail level: high (top-level only), medium (default), deep (expanded sub-operations)",
+    )
     
     # Scenario mode options
     flowchart_parser.add_argument(
@@ -298,6 +304,7 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     console.print("[cyan]Function:[/cyan] Auto-detect")
                 
+                console.print(f"[cyan]Detail level:[/cyan] {args.detail_level}")
                 console.print(f"[cyan]Max steps:[/cyan] {args.max_steps}")
                 console.print(f"[cyan]Use LLM:[/cyan] {args.use_llm}")
                 console.print()
@@ -309,6 +316,7 @@ def main(argv: list[str] | None = None) -> int:
                     file_path=args.file,
                     function_name=args.function,
                     max_steps=args.max_steps,
+                    detail_level=args.detail_level,
                     use_llm=args.use_llm,
                     chat_model=args.chat_model,
                     ollama_base_url=args.ollama_base_url,
