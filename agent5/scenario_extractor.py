@@ -454,9 +454,37 @@ def extract_scenario_from_function(
     # Find the entry function
     fn_node = _find_function(src_bytes, root, function_name)
     if fn_node is None:
-        raise RuntimeError(
-            f"Cannot find entry function{' ' + function_name if function_name else ''} in source code"
-        )
+        # List available functions for better error message
+        available_funcs = []
+        
+        def collect_func_names(node: Node) -> None:
+            if node.type in {"function_definition", "constructor_or_destructor_definition"}:
+                decl = node.child_by_field_name("declarator") or node.child_by_field_name("name")
+                if decl:
+                    fn_name = _get_identifier(src_bytes, decl)
+                    if fn_name:
+                        available_funcs.append(fn_name)
+            for child in node.children:
+                collect_func_names(child)
+        
+        collect_func_names(root)
+        
+        error_msg = f"Cannot find entry function"
+        if function_name:
+            error_msg += f" '{function_name}'"
+        error_msg += " in source code"
+        
+        if available_funcs:
+            error_msg += f"\n\nAvailable functions in file:\n"
+            for i, fn in enumerate(available_funcs[:20], 1):
+                error_msg += f"  {i}. {fn}\n"
+            if len(available_funcs) > 20:
+                error_msg += f"  ... and {len(available_funcs) - 20} more\n"
+            error_msg += f"\nUse: --function <function_name>"
+        else:
+            error_msg += "\n\nNo function definitions found in file."
+        
+        raise RuntimeError(error_msg)
     
     # Build SFM from the function
     builder = SFMBuilder(max_steps=max_steps)
@@ -466,12 +494,22 @@ def extract_scenario_from_function(
 
 
 def _find_function(source_bytes: bytes, root: Node, name: str | None) -> Node | None:
-    """Find a function definition node by name."""
+    """
+    Find a function definition node by name.
+    Recursively searches through namespaces, classes, etc.
+    """
     functions = []
     
-    for child in root.children:
-        if child.type in {"function_definition", "constructor_or_destructor_definition"}:
-            functions.append(child)
+    # Recursively collect all function definitions
+    def collect_functions(node: Node) -> None:
+        if node.type in {"function_definition", "constructor_or_destructor_definition"}:
+            functions.append(node)
+        
+        # Recurse into children
+        for child in node.children:
+            collect_functions(child)
+    
+    collect_functions(root)
     
     if not functions:
         return None
@@ -480,12 +518,31 @@ def _find_function(source_bytes: bytes, root: Node, name: str | None) -> Node | 
         # Return first function if no name specified
         return functions[0]
     
-    # Find by name
+    # Find by name (exact match or partial match)
+    name_lower = name.lower()
+    
+    # First try exact match
     for fn in functions:
         decl = fn.child_by_field_name("declarator") or fn.child_by_field_name("name")
         if decl:
             fn_name = _get_identifier(source_bytes, decl)
-            if fn_name == name:
+            if fn_name and fn_name == name:
+                return fn
+    
+    # Try case-insensitive match
+    for fn in functions:
+        decl = fn.child_by_field_name("declarator") or fn.child_by_field_name("name")
+        if decl:
+            fn_name = _get_identifier(source_bytes, decl)
+            if fn_name and fn_name.lower() == name_lower:
+                return fn
+    
+    # Try partial match (contains)
+    for fn in functions:
+        decl = fn.child_by_field_name("declarator") or fn.child_by_field_name("name")
+        if decl:
+            fn_name = _get_identifier(source_bytes, decl)
+            if fn_name and name_lower in fn_name.lower():
                 return fn
     
     return None
