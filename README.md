@@ -6,9 +6,10 @@ Agent5 is an advanced AI agent that deeply understands C++ projects through **AS
 
 ### 🎯 Core Capabilities
 - **AST-Aware Chunking**: Semantic code understanding through Abstract Syntax Tree analysis
+- **Project-Level Scenario Understanding**: Analyze complete operations across entire projects
 - **Scenario Flow Model (SFM)**: Deterministic, rule-based flow extraction
 - **RAG with Semantic Search**: Vector-based retrieval with AST-aware chunking
-- **Accurate Flowcharts**: Generate Mermaid diagrams from C++ code scenarios
+- **Dual Flowchart Modes**: Generate diagrams from single functions OR complete project scenarios
 - **Open-Source Stack**: Uses only open-source models and frameworks
 
 ### 🏗️ Architecture
@@ -127,14 +128,66 @@ python -m agent5 ask \
 
 ### 3. Generate Flowcharts
 
-Generate a scenario-based flowchart from C++ code:
+Agent5 supports **TWO modes** for flowchart generation:
+
+#### Mode 1: Project-Level Scenario (Recommended!)
+
+Generate flowcharts for complete operations across your entire project:
+
+```bash
+# MUST index project first!
+python -m agent5 index \
+  --project_path /path/to/your/project \
+  --collection myproject \
+  --clear
+
+# Generate scenario flowchart
+python -m agent5 flowchart \
+  --scenario "Create volume" \
+  --collection myproject \
+  --out create_volume_flow.mmd
+```
+
+**More examples:**
+
+```bash
+# Handle user login flow
+python -m agent5 flowchart \
+  --scenario "Handle user login" \
+  --collection myproject \
+  --out login_flow.mmd
+
+# System initialization
+python -m agent5 flowchart \
+  --scenario "Initialize system" \
+  --collection myproject \
+  --out init_flow.mmd \
+  --max_steps 50 \
+  --k 30
+```
+
+**Scenario Mode Options:**
+- `--scenario`: Scenario/operation name (required)
+- `--collection`: Indexed collection name (required)
+- `--out`: Output .mmd file path (required)
+- `--max_steps`: Maximum steps (default: 30)
+- `--k`: Number of code chunks to retrieve (default: 20)
+- `--project_path`: Project root path (optional)
+- `--chat_model`: LLM model (optional)
+
+**Outputs:**
+- `flowchart.mmd` - Mermaid flowchart diagram
+- `flowchart.scenario.json` - Scenario understanding (entry points, files, steps)
+
+#### Mode 2: Single Function (Legacy)
+
+Generate flowchart from a specific function in a file:
 
 ```bash
 python -m agent5 flowchart \
-  --file /path/to/source.cpp \
-  --out flowchart.mmd \
-  --function main \
-  --max_steps 30
+  --file src/handler.cpp \
+  --out handler_flow.mmd \
+  --function handleRequest
 ```
 
 **Auto-detect entry function:**
@@ -142,28 +195,15 @@ python -m agent5 flowchart \
 ```bash
 python -m agent5 flowchart \
   --file src/handler.cpp \
-  --out handler_flow.mmd \
-  --max_steps 40
+  --out handler_flow.mmd
 ```
 
-**With LLM translation** (optional, has deterministic fallback):
-
-```bash
-python -m agent5 flowchart \
-  --file src/handler.cpp \
-  --out handler_flow.mmd \
-  --use_llm \
-  --chat_model qwen3:8b
-```
-
-**Options:**
+**File Mode Options:**
 - `--file`: Input C++ source file (required)
 - `--out`: Output .mmd file path (required)
 - `--function`: Entry function name (auto-detect if omitted)
 - `--max_steps`: Maximum steps in flowchart (default: 30)
 - `--use_llm`: Use LLM for Mermaid translation (optional)
-- `--chat_model`: Chat model for LLM translation
-- `--ollama_base_url`: Override Ollama URL
 
 ### Viewing Flowcharts
 
@@ -235,9 +275,79 @@ Agent5 improves upon Agent3 with:
 - All edges must reference valid nodes
 - All branches must terminate or rejoin
 
+## Complete Workflow Example
+
+### Typical Usage Pattern:
+
+```bash
+# 1. Index your C++ project
+python -m agent5 index \
+  --project_path /path/to/poseidonos \
+  --collection poseidonos \
+  --clear
+
+# 2. Generate project-level scenario flowcharts
+python -m agent5 flowchart \
+  --scenario "Create volume" \
+  --collection poseidonos \
+  --out create_volume_flow.mmd
+
+python -m agent5 flowchart \
+  --scenario "Handle IO request" \
+  --collection poseidonos \
+  --out io_flow.mmd
+
+# 3. Ask questions about the codebase
+python -m agent5 ask \
+  --collection poseidonos \
+  --question "How does the volume creation flow work?"
+
+python -m agent5 ask \
+  --collection poseidonos \
+  --question "What happens when an IO request fails?" \
+  --focus src/io/io_handler.cpp
+```
+
 ## Examples
 
-### Example 1: Simple CLI Program
+### Example 1: Project-Level Scenario Flowchart
+
+**Your C++ Project Structure:**
+```
+project/
+├── src/
+│   ├── cli/
+│   │   └── volume_commands.cpp  # CLI handlers
+│   ├── volume/
+│   │   ├── volume_manager.cpp   # Volume management
+│   │   └── volume_validator.cpp # Validation logic
+│   └── storage/
+│       └── allocator.cpp        # Storage allocation
+```
+
+**Generate Complete Scenario Flowchart:**
+
+```bash
+# Index the project
+python -m agent5 index \
+  --project_path /path/to/project \
+  --collection myproject \
+  --clear
+
+# Generate "Create Volume" scenario flowchart
+python -m agent5 flowchart \
+  --scenario "Create volume" \
+  --collection myproject \
+  --out create_volume_flow.mmd
+```
+
+**Result:**
+- Analyzes code across ALL files (cli, volume, storage)
+- Understands cross-file interactions
+- Shows complete flow: CLI → Validation → Creation → Allocation
+- Outputs comprehensive flowchart covering the entire operation
+
+### Example 2: Simple CLI Program (Single Function)
 
 ```cpp
 // calculator.cpp
@@ -275,7 +385,7 @@ python -m agent5 flowchart --file calculator.cpp --out calc_flow.mmd
 - Print result
 - End
 
-### Example 2: RAG Query
+### Example 3: RAG Query
 
 ```bash
 python -m agent5 ask \
@@ -289,6 +399,93 @@ python -m agent5 ask \
 2. Include the focus file in full
 3. Use AST metadata to understand relationships
 4. Provide a step-by-step explanation with file citations
+
+### Example 4: Comparing Both Flowchart Modes
+
+**Scenario Mode (Project-Level):**
+```bash
+python -m agent5 flowchart \
+  --scenario "Handle network request" \
+  --collection myproject \
+  --out network_scenario.mmd
+```
+- ✅ Shows complete flow across multiple files
+- ✅ Includes: parsing → validation → routing → processing → response
+- ✅ Understands cross-module interactions
+- ✅ Best for understanding project operations
+
+**File Mode (Single Function):**
+```bash
+python -m agent5 flowchart \
+  --file src/network/request_handler.cpp \
+  --function handleRequest \
+  --out network_function.mmd
+```
+- ✅ Shows detailed flow within one function
+- ✅ Includes: all if/else branches, loops, returns
+- ✅ Good for understanding implementation details
+- ✅ Best for debugging specific functions
+
+## Quick Reference
+
+```bash
+# Index project (required for scenario mode)
+python -m agent5 index --project_path <path> --collection <name> --clear
+
+# Ask question
+python -m agent5 ask --collection <name> --question "..."
+
+# Generate flowchart - SCENARIO MODE (Recommended!)
+python -m agent5 flowchart --scenario "Operation name" --collection <name> --out <output.mmd>
+
+# Generate flowchart - FILE MODE (Single function)
+python -m agent5 flowchart --file <file.cpp> --out <output.mmd>
+
+# Get help
+python -m agent5 --help
+python -m agent5 index --help
+python -m agent5 ask --help
+python -m agent5 flowchart --help
+```
+
+## Common Use Cases
+
+### 1. Understanding a New Codebase
+
+```bash
+# Index the codebase
+python -m agent5 index --project_path ~/projects/myapp --collection myapp --clear
+
+# Explore key operations
+python -m agent5 flowchart --scenario "User authentication" --collection myapp --out auth_flow.mmd
+python -m agent5 flowchart --scenario "Data processing" --collection myapp --out data_flow.mmd
+python -m agent5 flowchart --scenario "Error handling" --collection myapp --out error_flow.mmd
+
+# Ask questions
+python -m agent5 ask --collection myapp --question "How does the system handle failures?"
+```
+
+### 2. Documenting Your Project
+
+```bash
+# Generate flowcharts for all major scenarios
+python -m agent5 flowchart --scenario "Initialize system" --collection myapp --out docs/init_flow.mmd
+python -m agent5 flowchart --scenario "Handle request" --collection myapp --out docs/request_flow.mmd
+python -m agent5 flowchart --scenario "Shutdown gracefully" --collection myapp --out docs/shutdown_flow.mmd
+```
+
+### 3. Debugging Complex Flows
+
+```bash
+# Get high-level scenario view
+python -m agent5 flowchart --scenario "Process payment" --collection myapp --out payment_scenario.mmd
+
+# Get detailed function view
+python -m agent5 flowchart --file src/payment/processor.cpp --function processPayment --out payment_detail.mmd
+
+# Ask specific questions
+python -m agent5 ask --collection myapp --question "What happens if payment validation fails?" --focus src/payment/processor.cpp
+```
 
 ## Architecture Details
 
