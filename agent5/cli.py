@@ -114,23 +114,54 @@ def build_parser() -> argparse.ArgumentParser:
         "flowchart",
         help="Generate a Mermaid flowchart from C++ code",
     )
-    flowchart_parser.add_argument(
+    
+    # Two modes: file-based (single function) or scenario-based (project-level)
+    mode_group = flowchart_parser.add_mutually_exclusive_group(required=True)
+    mode_group.add_argument(
         "--file",
-        required=True,
         type=_path,
-        help="Path to the C++ source file",
+        help="[File mode] Path to a specific C++ source file",
     )
+    mode_group.add_argument(
+        "--scenario",
+        type=str,
+        help="[Scenario mode] Scenario/operation name (e.g., 'Create volume', 'Handle login')",
+    )
+    
     flowchart_parser.add_argument(
         "--out",
         required=True,
         type=_path,
         help="Output path for the .mmd file",
     )
+    
+    # File mode options
     flowchart_parser.add_argument(
         "--function",
         default=None,
-        help="Name of the entry function (auto-detect if not specified)",
+        help="[File mode] Name of the entry function (auto-detect if not specified)",
     )
+    
+    # Scenario mode options
+    flowchart_parser.add_argument(
+        "--collection",
+        default=None,
+        help="[Scenario mode] Collection name (required for --scenario)",
+    )
+    flowchart_parser.add_argument(
+        "--project_path",
+        type=_path,
+        default=None,
+        help="[Scenario mode] Project root path",
+    )
+    flowchart_parser.add_argument(
+        "--k",
+        type=int,
+        default=20,
+        help="[Scenario mode] Number of code chunks to retrieve (default: 20)",
+    )
+    
+    # Common options
     flowchart_parser.add_argument(
         "--max_steps",
         type=int,
@@ -140,12 +171,17 @@ def build_parser() -> argparse.ArgumentParser:
     flowchart_parser.add_argument(
         "--use_llm",
         action="store_true",
-        help="Use LLM for translation (optional, has deterministic fallback)",
+        help="[File mode] Use LLM for translation (optional, has deterministic fallback)",
     )
     flowchart_parser.add_argument(
         "--chat_model",
         default=None,
-        help="Chat model name for LLM translation",
+        help="Chat model name",
+    )
+    flowchart_parser.add_argument(
+        "--embed_model",
+        default=None,
+        help="[Scenario mode] Embedding model name",
     )
     flowchart_parser.add_argument(
         "--ollama_base_url",
@@ -203,45 +239,92 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         
         elif args.command == "flowchart":
-            from agent5.flowchart import write_flowchart
-            
             console.print("\n[bold cyan]═══ Agent5: Generate Flowchart ═══[/bold cyan]\n")
-            console.print(f"[cyan]Input:[/cyan] {args.file}")
-            console.print(f"[cyan]Output:[/cyan] {args.out}")
             
-            if args.function:
-                console.print(f"[cyan]Function:[/cyan] {args.function}")
+            if args.scenario:
+                # Scenario mode: Project-level flowchart
+                if not args.collection:
+                    console.print("[red]Error: --collection is required for --scenario mode[/red]")
+                    console.print("Usage: python -m agent5 flowchart --scenario 'Create volume' --collection myproject --out flow.mmd")
+                    return 1
+                
+                from agent5.project_scenario import generate_project_scenario_flowchart
+                
+                console.print(f"[cyan]Mode:[/cyan] Project Scenario")
+                console.print(f"[cyan]Scenario:[/cyan] {args.scenario}")
+                console.print(f"[cyan]Collection:[/cyan] {args.collection}")
+                console.print(f"[cyan]Output:[/cyan] {args.out}")
+                console.print(f"[cyan]Max steps:[/cyan] {args.max_steps}")
+                console.print()
+                
+                console.print("[yellow]Step 1: Searching project for relevant code...[/yellow]")
+                console.print("[yellow]Step 2: Understanding scenario flow using LLM...[/yellow]")
+                console.print("[yellow]Step 3: Building flowchart...[/yellow]")
+                
+                scenario, mermaid = generate_project_scenario_flowchart(
+                    collection=args.collection,
+                    scenario_name=args.scenario,
+                    output_path=args.out,
+                    project_path=args.project_path,
+                    max_steps=args.max_steps,
+                    k=args.k,
+                    chat_model=args.chat_model,
+                    embed_model=args.embed_model,
+                    ollama_base_url=args.ollama_base_url,
+                )
+                
+                console.print(f"\n[bold green]✓ Project scenario flowchart generated[/bold green]")
+                console.print(f"[green]  Scenario:[/green] {scenario.scenario_name}")
+                console.print(f"[green]  Description:[/green] {scenario.description}")
+                console.print(f"[green]  Entry points:[/green] {', '.join(scenario.entry_points[:3])}")
+                console.print(f"[green]  Files involved:[/green] {len(scenario.involved_files)}")
+                console.print(f"[green]  Steps:[/green] {len(scenario.key_steps)}")
+                console.print(f"[green]  Output:[/green] {args.out}")
+                
+                understanding_path = args.out.with_suffix(".scenario.json")
+                console.print(f"[green]  Understanding:[/green] {understanding_path}")
+                console.print()
+                
             else:
-                console.print("[cyan]Function:[/cyan] Auto-detect")
+                # File mode: Single function flowchart
+                from agent5.flowchart import write_flowchart
+                
+                console.print(f"[cyan]Mode:[/cyan] Single Function")
+                console.print(f"[cyan]Input:[/cyan] {args.file}")
+                console.print(f"[cyan]Output:[/cyan] {args.out}")
+                
+                if args.function:
+                    console.print(f"[cyan]Function:[/cyan] {args.function}")
+                else:
+                    console.print("[cyan]Function:[/cyan] Auto-detect")
+                
+                console.print(f"[cyan]Max steps:[/cyan] {args.max_steps}")
+                console.print(f"[cyan]Use LLM:[/cyan] {args.use_llm}")
+                console.print()
+                
+                console.print("[yellow]Extracting Scenario Flow Model (SFM)...[/yellow]")
+                
+                flowchart = write_flowchart(
+                    output_path=args.out,
+                    file_path=args.file,
+                    function_name=args.function,
+                    max_steps=args.max_steps,
+                    use_llm=args.use_llm,
+                    chat_model=args.chat_model,
+                    ollama_base_url=args.ollama_base_url,
+                )
+                
+                console.print(f"\n[bold green]✓ Flowchart generated successfully[/bold green]")
+                console.print(f"[green]  Nodes:[/green] {flowchart.node_count}")
+                console.print(f"[green]  Edges:[/green] {flowchart.edge_count}")
+                console.print(f"[green]  Output:[/green] {args.out}")
+                
+                if flowchart.sfm:
+                    sfm_path = args.out.with_suffix(".sfm.json")
+                    console.print(f"[green]  SFM (debug):[/green] {sfm_path}")
+                
+                console.print()
             
-            console.print(f"[cyan]Max steps:[/cyan] {args.max_steps}")
-            console.print(f"[cyan]Use LLM:[/cyan] {args.use_llm}")
-            console.print()
-            
-            console.print("[yellow]Extracting Scenario Flow Model (SFM)...[/yellow]")
-            
-            flowchart = write_flowchart(
-                output_path=args.out,
-                file_path=args.file,
-                function_name=args.function,
-                max_steps=args.max_steps,
-                use_llm=args.use_llm,
-                chat_model=args.chat_model,
-                ollama_base_url=args.ollama_base_url,
-            )
-            
-            console.print(
-                f"\n[bold green]✓ Flowchart generated successfully[/bold green]"
-            )
-            console.print(f"[green]  Nodes:[/green] {flowchart.node_count}")
-            console.print(f"[green]  Edges:[/green] {flowchart.edge_count}")
-            console.print(f"[green]  Output:[/green] {args.out}")
-            
-            if flowchart.sfm:
-                sfm_path = args.out.with_suffix(".sfm.json")
-                console.print(f"[green]  SFM (debug):[/green] {sfm_path}")
-            
-            console.print()
             return 0
         
         else:
