@@ -49,6 +49,17 @@ def build_cpp_documents(
             chunks = chunk_cpp_file(rec.path, rec.relpath)
             
             for chunk in chunks:
+                # Convert list to comma-separated string for ChromaDB compatibility
+                deps_str = ", ".join(chunk.dependencies) if chunk.dependencies else ""
+                
+                # Ensure metadata values are ChromaDB-compatible (no lists)
+                safe_metadata = {}
+                for key, value in chunk.metadata.items():
+                    if isinstance(value, list):
+                        safe_metadata[key] = ", ".join(str(v) for v in value)
+                    else:
+                        safe_metadata[key] = value
+                
                 docs.append(
                     Document(
                         page_content=chunk.content,
@@ -60,8 +71,8 @@ def build_cpp_documents(
                             "qualified_name": chunk.qualified_name,
                             "start_line": chunk.start_line,
                             "end_line": chunk.end_line,
-                            "dependencies": chunk.dependencies,
-                            **chunk.metadata,
+                            "dependencies": deps_str,
+                            **safe_metadata,
                         },
                     )
                 )

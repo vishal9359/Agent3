@@ -213,6 +213,8 @@ class ASTChunker:
         if header_end_line > 0:
             header_text = "\n".join(source.split("\n")[: header_end_line + 1])
             if header_text.strip():
+                # Convert includes list to string for ChromaDB compatibility
+                includes_str = "; ".join(includes) if includes else ""
                 chunks.append(
                     CodeChunk(
                         content=header_text,
@@ -224,7 +226,7 @@ class ASTChunker:
                         file_path=str(file_path),
                         rel_path=rel_path,
                         dependencies=[],
-                        metadata={"includes": includes},
+                        metadata={"includes": includes_str},
                     )
                 )
         
