@@ -198,12 +198,40 @@ python -m agent5 flowchart \
   --out handler_flow.mmd
 ```
 
+**With detail level (v3+):**
+
+```bash
+# High detail: Top-level business steps only
+python -m agent5 flowchart \
+  --file src/handler.cpp \
+  --out handler_flow_high.mmd \
+  --detail-level high
+
+# Medium detail: Include validations, decisions (default)
+python -m agent5 flowchart \
+  --file src/handler.cpp \
+  --out handler_flow_medium.mmd \
+  --detail-level medium
+
+# Deep detail: Expand critical sub-operations
+python -m agent5 flowchart \
+  --file src/handler.cpp \
+  --out handler_flow_deep.mmd \
+  --detail-level deep
+```
+
 **File Mode Options:**
 - `--file`: Input C++ source file (required)
 - `--out`: Output .mmd file path (required)
 - `--function`: Entry function name (auto-detect if omitted)
+- `--detail-level`: Detail level - `high|medium|deep` (default: medium, v3+)
 - `--max_steps`: Maximum steps in flowchart (default: 30)
 - `--use_llm`: Use LLM for Mermaid translation (optional)
+
+**Detail Levels (v3):**
+- **high**: Only top-level business steps (minimal, for executives/architects)
+- **medium**: Include validations, decisions, state changes (default, for developers)
+- **deep**: Expand critical sub-operations (detailed, for debugging/documentation)
 
 ### Viewing Flowcharts
 
