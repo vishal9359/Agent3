@@ -1,0 +1,22 @@
+# LangChain and LangGraph
+langgraph>=0.2.62,<0.3.0
+langchain-core>=0.3.45,<0.4.0
+langchain-community>=0.3.13,<0.4.0
+langchain-chroma>=0.1.0
+langchain-text-splitters>=0.3.7,<0.4.0
+langchain-ollama>=0.2.0,<0.3.0
+
+# Vector store
+chroma-hnswlib==0.7.6
+chromadb==0.5.23
+
+# Tree-sitter for AST parsing
+tree-sitter==0.25.2
+tree-sitter-cpp==0.23.4
+
+# Utilities
+pydantic==2.10.4
+python-dotenv==1.0.1
+tqdm==4.67.1
+rich==13.9.4
+
