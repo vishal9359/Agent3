@@ -26,6 +26,8 @@ except ImportError:
     raise ImportError("libclang is required. Install with: pip install libclang")
 
 from .clang_analyzer import CFGNode, FunctionCFG, NodeType
+from .call_graph_builder import FunctionInfo, CallGraph
+from .cfg_builder import ControlFlowGraph, BasicBlock
 
 logger = logging.getLogger(__name__)
 
