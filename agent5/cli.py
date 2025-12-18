@@ -189,6 +189,21 @@ def build_parser() -> argparse.ArgumentParser:
         help="[File mode] Use LLM for translation (optional, has deterministic fallback)",
     )
     flowchart_parser.add_argument(
+        "--use_v4",
+        action="store_true",
+        help="[File mode] Use V4 pipeline (DocAgent-inspired bottom-up understanding)",
+    )
+    flowchart_parser.add_argument(
+        "--include_paths",
+        default=None,
+        help="[V4 mode] Comma-separated include paths for Clang (e.g., '/usr/include,/usr/local/include')",
+    )
+    flowchart_parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="[V4 mode] Enable debug mode (save intermediate artifacts)",
+    )
+    flowchart_parser.add_argument(
         "--chat_model",
         default=None,
         help="Chat model name",
@@ -302,52 +317,131 @@ def main(argv: list[str] | None = None) -> int:
                 
             else:
                 # File mode: Entry-point specified flowchart
-                from agent5.flowchart import write_flowchart
                 
-                console.print(f"[cyan]Mode:[/cyan] Entry-Point Scenario")
-                console.print(f"[cyan]Entry file:[/cyan] {args.file}")
-                
-                if args.function:
+                # Check if V4 pipeline is requested
+                if args.use_v4:
+                    # V4: DocAgent-inspired bottom-up semantic aggregation
+                    from agent5.pipeline import generate_flowchart_from_project
+                    from agent5.ollama_compat import get_chat_model
+                    
+                    console.print(f"[bold magenta]Mode: V4 DocAgent-Inspired Pipeline[/bold magenta]")
+                    console.print(f"[cyan]Entry file:[/cyan] {args.file}")
+                    
+                    if not args.function:
+                        console.print("[red]Error: --function is required for V4 pipeline[/red]")
+                        return 1
+                    
                     console.print(f"[cyan]Entry function:[/cyan] {args.function}")
+                    
+                    # Project path defaults to file parent if not provided
+                    project_path = args.project_path or args.file.parent
+                    console.print(f"[cyan]Project path:[/cyan] {project_path}")
+                    
+                    console.print(f"[cyan]Detail level:[/cyan] {args.detail_level}")
+                    console.print(f"[cyan]Use LLM:[/cyan] {args.use_llm}")
+                    console.print(f"[cyan]Debug mode:[/cyan] {args.debug}")
+                    console.print(f"[cyan]Output:[/cyan] {args.out}")
+                    
+                    # Parse include paths
+                    include_paths = None
+                    if args.include_paths:
+                        include_paths = [Path(p.strip()) for p in args.include_paths.split(",")]
+                        console.print(f"[cyan]Include paths:[/cyan] {', '.join(str(p) for p in include_paths)}")
+                    
+                    console.print()
+                    
+                    # Get chat model if LLM is enabled
+                    chat_model = None
+                    if args.use_llm:
+                        chat_model = get_chat_model(
+                            model_name=args.chat_model,
+                            ollama_base_url=args.ollama_base_url,
+                        )
+                    
+                    # Run V4 pipeline
+                    try:
+                        mermaid_code = generate_flowchart_from_project(
+                            project_path=project_path,
+                            entry_function=args.function,
+                            entry_file=args.file,
+                            detail_level=args.detail_level,
+                            output_path=args.out,
+                            chat_model=chat_model,
+                            use_llm=args.use_llm,
+                            include_paths=include_paths,
+                            debug=args.debug,
+                        )
+                        
+                        console.print(f"\n[bold green]✓ V4 Flowchart generated successfully[/bold green]")
+                        console.print(f"[green]  Output:[/green] {args.out}")
+                        
+                        if args.debug:
+                            console.print(f"[green]  Debug artifacts:[/green]")
+                            console.print(f"[green]    - AST context: {project_path / 'debug_ast_context.json'}[/green]")
+                            console.print(f"[green]    - Semantic summaries: {project_path / 'debug_semantic_summaries.json'}[/green]")
+                            console.print(f"[green]    - SFM: {project_path / 'debug_sfm.json'}[/green]")
+                        
+                        console.print()
+                        
+                    except Exception as e:
+                        console.print(f"\n[bold red]V4 Pipeline Error:[/bold red] {e}")
+                        if args.debug:
+                            raise
+                        return 1
+                
                 else:
-                    console.print("[cyan]Entry function:[/cyan] Auto-detect")
-                
-                if args.project_path:
-                    console.print(f"[cyan]Analysis scope:[/cyan] {args.project_path} (entire project)")
-                else:
-                    console.print(f"[cyan]Analysis scope:[/cyan] {args.file.parent} (file directory - WARNING: Limited!)")
-                
-                console.print(f"[cyan]Detail level:[/cyan] {args.detail_level}")
-                console.print(f"[cyan]Max steps:[/cyan] {args.max_steps}")
-                console.print(f"[cyan]Output:[/cyan] {args.out}")
-                console.print()
-                
-                console.print("[yellow]Step 1: Locating entry point...[/yellow]")
-                console.print("[yellow]Step 2: Extracting scenario flow across project...[/yellow]")
-                console.print("[yellow]Step 3: Building Scenario Flow Model (SFM)...[/yellow]")
-                
-                flowchart = write_flowchart(
-                    output_path=args.out,
-                    file_path=args.file,
-                    function_name=args.function,
-                    project_path=args.project_path,
-                    max_steps=args.max_steps,
-                    detail_level=args.detail_level,
-                    use_llm=args.use_llm,
-                    chat_model=args.chat_model,
-                    ollama_base_url=args.ollama_base_url,
-                )
-                
-                console.print(f"\n[bold green]✓ Flowchart generated successfully[/bold green]")
-                console.print(f"[green]  Nodes:[/green] {flowchart.node_count}")
-                console.print(f"[green]  Edges:[/green] {flowchart.edge_count}")
-                console.print(f"[green]  Output:[/green] {args.out}")
-                
-                if flowchart.sfm:
-                    sfm_path = args.out.with_suffix(".sfm.json")
-                    console.print(f"[green]  SFM (debug):[/green] {sfm_path}")
-                
-                console.print()
+                    # V3: Original tree-sitter based pipeline
+                    from agent5.flowchart import write_flowchart
+                    
+                    console.print(f"[cyan]Mode:[/cyan] Entry-Point Scenario (V3)")
+                    console.print(f"[cyan]Entry file:[/cyan] {args.file}")
+                    
+                    if args.function:
+                        console.print(f"[cyan]Entry function:[/cyan] {args.function}")
+                    else:
+                        console.print("[cyan]Entry function:[/cyan] Auto-detect")
+                    
+                    if args.project_path:
+                        console.print(f"[cyan]Analysis scope:[/cyan] {args.project_path} (entire project)")
+                    else:
+                        console.print(f"[cyan]Analysis scope:[/cyan] {args.file.parent} (file directory - WARNING: Limited!)")
+                    
+                    console.print(f"[cyan]Detail level:[/cyan] {args.detail_level}")
+                    console.print(f"[cyan]Max steps:[/cyan] {args.max_steps}")
+                    console.print(f"[cyan]Output:[/cyan] {args.out}")
+                    console.print()
+                    
+                    if args.project_path:
+                        console.print("[yellow]Step 1: Building call graph across project...[/yellow]")
+                        console.print("[yellow]Step 2: Bottom-up semantic aggregation (DocAgent-inspired)...[/yellow]")
+                        console.print("[yellow]Step 3: Constructing Scenario Flow Model (SFM)...[/yellow]")
+                    else:
+                        console.print("[yellow]Step 1: Locating entry point in file...[/yellow]")
+                        console.print("[yellow]Step 2: Extracting scenario flow (single-file mode)...[/yellow]")
+                        console.print("[yellow]Step 3: Building Scenario Flow Model (SFM)...[/yellow]")
+                    
+                    flowchart = write_flowchart(
+                        output_path=args.out,
+                        file_path=args.file,
+                        function_name=args.function,
+                        project_path=args.project_path,
+                        max_steps=args.max_steps,
+                        detail_level=args.detail_level,
+                        use_llm=args.use_llm,
+                        chat_model=args.chat_model,
+                        ollama_base_url=args.ollama_base_url,
+                    )
+                    
+                    console.print(f"\n[bold green]✓ Flowchart generated successfully[/bold green]")
+                    console.print(f"[green]  Nodes:[/green] {flowchart.node_count}")
+                    console.print(f"[green]  Edges:[/green] {flowchart.edge_count}")
+                    console.print(f"[green]  Output:[/green] {args.out}")
+                    
+                    if flowchart.sfm:
+                        sfm_path = args.out.with_suffix(".sfm.json")
+                        console.print(f"[green]  SFM (debug):[/green] {sfm_path}")
+                    
+                    console.print()
             
             return 0
         

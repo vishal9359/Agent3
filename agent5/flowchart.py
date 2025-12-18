@@ -385,10 +385,8 @@ def write_flowchart(
     """
     # Use cross-file analysis with bottom-up aggregation if project_path is provided (VERSION 4)
     if project_path and function_name:
-        from agent5.scenario_extractor import (
-            DetailLevel,
-            extract_scenario_from_project,
-        )
+        from agent5.sfm_constructor import DetailLevel
+        from agent5.scenario_pipeline_v4 import extract_scenario_from_project
         
         # Convert string to enum
         detail_enum = DetailLevel.MEDIUM  # default
@@ -432,8 +430,17 @@ def write_flowchart(
             edge_count=edges,
             sfm=sfm.to_dict(),
         )
+        
+        # Write metadata from bottom-up aggregation
+        if metadata:
+            metadata_path = output_path.with_suffix(".metadata.json")
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            metadata_path.write_text(
+                json.dumps(metadata, indent=2),
+                encoding="utf-8",
+            )
     else:
-        # Single-file analysis (legacy mode)
+        # Single-file analysis (legacy mode - v3)
         flowchart = generate_flowchart_from_file(
             file_path,
             function_name=function_name,
@@ -443,6 +450,7 @@ def write_flowchart(
             chat_model=chat_model,
             ollama_base_url=ollama_base_url,
         )
+        metadata = None
     
     # Write to file
     output_path.parent.mkdir(parents=True, exist_ok=True)

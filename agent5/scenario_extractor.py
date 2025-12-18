@@ -1001,3 +1001,148 @@ def _process_declaration(
     _connect_frontier(builder, frontier, nid, incoming_label)
     return [nid]
 
+
+def extract_scenario_from_project(
+    project_path: Path,
+    function_name: str,
+    file_path: Path | None = None,
+    *,
+    max_steps: int = 50,
+    detail_level: DetailLevel = DetailLevel.MEDIUM,
+) -> tuple[ScenarioFlowModel, dict[str, Any]]:
+    """
+    Extract a Scenario Flow Model from a C++ project using bottom-up aggregation.
+    
+    This is the VERSION 4 implementation that uses:
+    - Call graph analysis for cross-file dependencies
+    - Bottom-up semantic aggregation (DocAgent-inspired)
+    - LLM-assisted semantic understanding
+    - Deterministic SFM construction from aggregated semantics
+    
+    Pipeline:
+        Project → Call Graph → Leaf Summaries → Bottom-up Aggregation → 
+        Entry Function Semantic → SFM Construction → Validated SFM
+    
+    Args:
+        project_path: Root directory of the C++ project
+        function_name: Entry function name
+        file_path: Optional file path for entry function disambiguation
+        max_steps: Maximum number of steps in the scenario
+        detail_level: Level of detail (HIGH, MEDIUM, DEEP)
+        
+    Returns:
+        Tuple of (ScenarioFlowModel, semantic_metadata)
+        
+    Raises:
+        RuntimeError: If call graph cannot be built or SFM cannot be constructed
+    """
+    from agent5.call_graph_builder import build_call_graph, find_entry_function
+    from agent5.semantic_aggregator import (
+        build_semantic_hierarchy,
+        generate_scenario_description,
+    )
+    
+    # Step 1: Build call graph
+    call_graph = build_call_graph(project_path)
+    
+    if not call_graph.nodes:
+        raise RuntimeError(f"No functions found in project: {project_path}")
+    
+    # Step 2: Find entry function
+    entry_node = find_entry_function(call_graph, function_name, file_path)
+    
+    if not entry_node:
+        # List available functions
+        available = list(call_graph.nodes.keys())[:20]
+        error_msg = f"Cannot find entry function '{function_name}' in project"
+        if available:
+            error_msg += f"\n\nAvailable functions (showing first 20):\n"
+            for i, fn in enumerate(available, 1):
+                error_msg += f"  {i}. {fn}\n"
+            error_msg += f"\nTotal functions: {len(call_graph.nodes)}"
+        raise RuntimeError(error_msg)
+    
+    # Step 3: Build semantic hierarchy (bottom-up aggregation)
+    semantic_summaries = build_semantic_hierarchy(
+        call_graph,
+        entry_node,
+        detail_level=detail_level,
+    )
+    
+    entry_summary = semantic_summaries.get(entry_node.func_info.qualified_name)
+    
+    if not entry_summary:
+        raise RuntimeError(
+            f"Failed to build semantic summary for entry function: {function_name}"
+        )
+    
+    # Step 4: Convert semantic summary to SFM
+    # This is where we translate high-level semantic understanding into
+    # a structured flow model suitable for flowchart generation
+    builder = SFMBuilder(max_steps=max_steps, detail_level=detail_level)
+    
+    last_node = "start"
+    node_counter = 0
+    
+    # Add key operations as process nodes
+    for op in entry_summary.key_operations[:max_steps - len(entry_summary.decisions) - 2]:
+        node_counter += 1
+        nid = builder.add_process(op)
+        if nid:
+            builder.add_edge(last_node, nid)
+            last_node = nid
+    
+    # Add decision points
+    for decision in entry_summary.decisions[:max_steps - node_counter - 2]:
+        node_counter += 1
+        d = builder.add_decision(decision if decision.endswith("?") else f"{decision}?")
+        if d:
+            builder.add_edge(last_node, d)
+            
+            # Create branches
+            yes_node = builder.add_process("Handle yes case")
+            no_node = builder.add_process("Handle no case")
+            
+            if yes_node and no_node:
+                builder.add_edge(d, yes_node, "YES")
+                builder.add_edge(d, no_node, "NO")
+                
+                # Merge branches
+                merge_node = builder.add_process("Continue")
+                if merge_node:
+                    builder.add_edge(yes_node, merge_node)
+                    builder.add_edge(no_node, merge_node)
+                    last_node = merge_node
+                else:
+                    builder.add_edge(yes_node, "end")
+                    builder.add_edge(no_node, "end")
+                    last_node = None
+                    break
+    
+    # Connect to end
+    if last_node and last_node != "end":
+        builder.add_edge(last_node, "end")
+    
+    # Build and validate SFM
+    sfm = builder.build()
+    
+    # Generate scenario description
+    scenario_desc = generate_scenario_description(entry_summary, semantic_summaries)
+    
+    # Metadata for debugging and documentation
+    metadata = {
+        "entry_function": entry_node.func_info.qualified_name,
+        "entry_file": str(entry_node.func_info.file_path),
+        "call_graph_depth": entry_node.level,
+        "reachable_functions": len(semantic_summaries),
+        "scenario_description": scenario_desc,
+        "semantic_summary": {
+            "summary": entry_summary.summary,
+            "key_operations": entry_summary.key_operations,
+            "decisions": entry_summary.decisions,
+            "state_changes": entry_summary.state_changes,
+        },
+    }
+    
+    return sfm, metadata
+
