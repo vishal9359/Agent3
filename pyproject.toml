@@ -24,6 +24,7 @@ dependencies = [
 
 [project.scripts]
 agent5 = "agent5.cli:main"
+agent5-v4 = "agent5.cli_v4:main"
 
 [build-system]
 requires = ["setuptools>=61.0"]
