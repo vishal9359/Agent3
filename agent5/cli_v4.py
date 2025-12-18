@@ -270,8 +270,6 @@ if __name__ == '__main__':
 # Alternative argparse-based CLI (used as entry point for agent5-v4 command)
 # =============================================================================
 
-import argparse
-
 from agent5.logging_utils import console, get_logger
 
 logger = get_logger(__name__)
