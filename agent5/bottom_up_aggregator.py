@@ -516,3 +516,75 @@ Keep summaries concise (1-2 sentences each).
             return node
         
         return build_tree(entry_function, set())
+
+
+@dataclass
+class FunctionSummary:
+    """
+    Compatibility wrapper for aggregated semantics to match expected interface.
+    
+    This provides the properties expected by downstream stages.
+    """
+    aggregated: AggregatedSemantics
+    
+    @property
+    def purpose(self) -> str:
+        return self.aggregated.semantic_summary
+    
+    @property
+    def preconditions(self) -> List[str]:
+        # Extract preconditions from control flow summary if any
+        return []
+    
+    @property
+    def control_flow(self) -> List[str]:
+        return [self.aggregated.control_flow_summary]
+    
+    @property
+    def state_changes(self) -> List[str]:
+        return [self.aggregated.state_impact_summary]
+    
+    @property
+    def dependencies(self) -> List[str]:
+        return self.aggregated.child_functions
+
+
+def aggregate_semantics(
+    project_ast: ProjectAST,
+    leaf_semantics: Dict[str, FunctionSemantics],
+    entry_function: str,
+    llm_model: Optional[str] = None,
+    llm_base_url: Optional[str] = None,
+) -> FunctionSummary:
+    """
+    Convenience function for bottom-up semantic aggregation.
+    
+    This wraps the BottomUpAggregator class for easier functional-style usage.
+    
+    Args:
+        project_ast: Complete project AST
+        leaf_semantics: Leaf-level semantic extractions
+        entry_function: Entry function name to start aggregation from
+        llm_model: Optional Ollama model name
+        llm_base_url: Optional Ollama server URL
+    
+    Returns:
+        FunctionSummary for the entry function
+    """
+    aggregator = BottomUpAggregator(
+        project_ast=project_ast,
+        leaf_semantics=leaf_semantics,
+        chat_model=llm_model,
+        ollama_base_url=llm_base_url,
+    )
+    
+    # Perform aggregation
+    aggregator.aggregate(entry_function)
+    
+    # Return entry function summary
+    entry_summary = aggregator.get_entry_summary(entry_function)
+    
+    if not entry_summary:
+        raise ValueError(f"Failed to aggregate semantics for entry function: {entry_function}")
+    
+    return FunctionSummary(aggregated=entry_summary)

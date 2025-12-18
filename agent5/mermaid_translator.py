@@ -212,3 +212,25 @@ For decisions, use |Yes| and |No| labels on branches."""
             label = label[:97] + "..."
         
         return label
+
+
+def translate_to_mermaid(
+    sfm: 'ScenarioFlowModel',
+    llm_model: str = "qwen2.5-coder:7b",
+    llm_base_url: str = "http://localhost:11434",
+    use_llm: bool = True
+) -> str:
+    """
+    Convenience function to translate SFM to Mermaid flowchart code.
+    
+    Args:
+        sfm: Scenario Flow Model to translate
+        llm_model: Ollama model name (unused currently)
+        llm_base_url: Ollama server URL (unused currently)
+        use_llm: Whether to use LLM for translation
+    
+    Returns:
+        Mermaid flowchart code as string
+    """
+    translator = MermaidTranslator(model_name=llm_model, use_llm=use_llm)
+    return translator.translate(sfm)

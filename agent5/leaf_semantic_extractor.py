@@ -472,3 +472,24 @@ class LeafSemanticExtractor:
     def get_function_semantics(self, function_name: str) -> Optional[FunctionSemantics]:
         """Get semantic description for a specific function."""
         return self.function_semantics.get(function_name)
+
+
+def extract_leaf_semantics(project_ast: ProjectAST) -> Dict[str, Dict[str, 'BlockSemantics']]:
+    """
+    Convenience function to extract leaf-level semantics from a project AST.
+    
+    Args:
+        project_ast: Complete project AST with CFGs
+    
+    Returns:
+        Dictionary mapping function_name -> (block_id -> BlockSemantics)
+    """
+    extractor = LeafSemanticExtractor(project_ast)
+    function_semantics = extractor.extract_semantics()
+    
+    # Convert FunctionSemantics to dict of BlockSemantics for compatibility
+    result = {}
+    for func_name, func_sem in function_semantics.items():
+        result[func_name] = func_sem.blocks
+    
+    return result

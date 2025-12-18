@@ -430,3 +430,33 @@ def load_sfm_from_file(input_path: str) -> ScenarioFlowModel:
     
     logger.info(f"Loaded SFM from {input_path}")
     return sfm
+
+
+def build_scenario_flow_model(function_summary: any) -> ScenarioFlowModel:
+    """
+    Convenience function to build a Scenario Flow Model from a function summary.
+    
+    Args:
+        function_summary: Function summary (can be FunctionSummary wrapper or AggregatedSemantics)
+    
+    Returns:
+        ScenarioFlowModel
+    """
+    from agent5.bottom_up_aggregator import FunctionSummary, AggregatedSemantics
+    
+    # Extract the actual aggregated semantics
+    if hasattr(function_summary, 'aggregated'):
+        # It's a FunctionSummary wrapper
+        aggregated = function_summary.aggregated
+        entry_function = aggregated.function_name
+    elif isinstance(function_summary, AggregatedSemantics):
+        # It's directly an AggregatedSemantics
+        aggregated = function_summary
+        entry_function = aggregated.function_name
+    else:
+        raise TypeError(f"Unsupported function_summary type: {type(function_summary)}")
+    
+    builder = SFMBuilder()
+    sfm = builder.build_sfm(entry_function, aggregated)
+    
+    return sfm
