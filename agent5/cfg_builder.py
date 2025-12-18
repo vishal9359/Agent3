@@ -126,6 +126,11 @@ class CFGBuilder:
         # Process function body
         if func_info.body_statements:
             self._process_statements(func_info.body_statements, entry_block, cfg)
+        elif ast_root and ast_root.cursor:
+            # Fallback: use ast_root's children if body_statements not available
+            body_statements = ast_root.children
+            if body_statements:
+                self._process_statements(body_statements, entry_block, cfg)
         
         # Identify exit blocks (blocks with no successors or return statements)
         for block_id, block in cfg.blocks.items():
@@ -391,4 +396,5 @@ def build_project_cfgs(call_graph) -> Dict[str, ControlFlowGraph]:
     
     logger.info(f"Successfully built {len(cfgs)} CFGs")
     return cfgs
+
 

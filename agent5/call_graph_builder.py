@@ -39,6 +39,8 @@ class FunctionInfo:
     is_leaf: bool = False  # True if function makes no calls
     calls: list[str] = field(default_factory=list)  # List of called function names
     called_by: list[str] = field(default_factory=list)  # List of caller function names
+    body_statements: list[Any] | None = None  # AST nodes representing function body statements
+    ast_root: Any | None = None  # Root AST node for the function
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
@@ -414,4 +416,5 @@ def find_entry_function(
         return candidates[0]
     
     return None
+
 

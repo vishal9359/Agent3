@@ -16,6 +16,7 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
+from enum import Enum
 
 try:
     import clang.cindex as clang
@@ -26,6 +27,38 @@ except ImportError:
     logging.warning("libclang not available - Clang AST features disabled")
 
 logger = logging.getLogger(__name__)
+
+
+class NodeType(Enum):
+    """Types of AST/CFG nodes"""
+    ENTRY = "entry"
+    EXIT = "exit"
+    STATEMENT = "statement"
+    DECISION = "decision"
+    LOOP = "loop"
+    CALL = "call"
+    RETURN = "return"
+    ERROR_EXIT = "error_exit"
+    EARLY_EXIT = "early_exit"
+
+
+@dataclass
+class ASTNode:
+    """
+    Wrapper around Clang's Cursor with additional metadata.
+    
+    Represents a node in the Abstract Syntax Tree with semantic annotations.
+    """
+    cursor: Optional[clang.Cursor] = None
+    node_type: Optional[NodeType] = None
+    kind: Optional[CursorKind] = None
+    
+    @property
+    def children(self) -> List['ASTNode']:
+        """Get children of this AST node"""
+        if not self.cursor:
+            return []
+        return [ASTNode(cursor=child, kind=child.kind) for child in self.cursor.get_children()]
 
 
 @dataclass
