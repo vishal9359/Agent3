@@ -263,8 +263,9 @@ if __name__ == '__main__':
     cli_v4()
 
 
-This CLI provides access to the DocAgent-inspired bottom-up semantic aggregation pipeline.
-"""
+# =============================================================================
+# Alternative argparse-based CLI (used as entry point for agent5-v4 command)
+# =============================================================================
 
 from __future__ import annotations
 
