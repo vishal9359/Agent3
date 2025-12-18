@@ -15,11 +15,13 @@ Key principles:
 import json
 import logging
 from dataclasses import asdict, dataclass, field
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, TYPE_CHECKING
 
-from langchain_community.chat_models import ChatOllama
-from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_core.output_parsers import StrOutputParser
+# Lazy imports for LangChain - only import when actually used
+if TYPE_CHECKING:
+    from langchain_community.chat_models import ChatOllama
+    from langchain_core.messages import HumanMessage, SystemMessage
+    from langchain_core.output_parsers import StrOutputParser
 
 from .clang_ast_parser import CallRelationship, ProjectAST
 from .leaf_semantic_extractor import FunctionSemantics, SemanticActionType
@@ -86,7 +88,7 @@ class BottomUpAggregator:
         
         # Initialize LLM
         self.llm = self._init_llm(chat_model, ollama_base_url)
-        self.parser = StrOutputParser()
+        self.parser = None  # Will be set in _init_llm if LangChain is available
         
         # Build reverse call graph (callee -> callers)
         self.reverse_call_graph: Dict[str, List[str]] = {}
@@ -94,19 +96,27 @@ class BottomUpAggregator:
     
     def _init_llm(
         self, chat_model: Optional[str], ollama_base_url: Optional[str]
-    ) -> Optional[ChatOllama]:
+    ) -> Optional['ChatOllama']:
         """Initialize LLM for semantic aggregation."""
         if not chat_model:
             logger.warning("No chat model specified - using rule-based aggregation only")
             return None
         
         try:
+            # Import LangChain only when actually needed
+            from langchain_community.chat_models import ChatOllama
+            from langchain_core.output_parsers import StrOutputParser
+            
             llm = ChatOllama(
                 model=chat_model or "llama3.2:3b",
                 base_url=ollama_base_url or "http://localhost:11434",
                 temperature=0.1,  # Low temperature for deterministic output
             )
+            self.parser = StrOutputParser()
             return llm
+        except ImportError as e:
+            logger.error(f"LangChain not installed: {e}. Using rule-based aggregation only.")
+            return None
         except Exception as e:
             logger.error(f"Failed to initialize LLM: {e}")
             return None
@@ -337,13 +347,16 @@ class BottomUpAggregator:
         prompt = self._build_aggregation_prompt(context)
         
         try:
+            # Import LangChain messages only when needed
+            from langchain_core.messages import HumanMessage, SystemMessage
+            
             messages = [
                 SystemMessage(content=self._get_system_prompt()),
                 HumanMessage(content=prompt),
             ]
             
             response = self.llm.invoke(messages)
-            summary_text = self.parser.invoke(response)
+            summary_text = self.parser.invoke(response) if self.parser else str(response)
             
             # Parse LLM response
             aggregated = self._parse_llm_response(
