@@ -383,17 +383,66 @@ def write_flowchart(
         - project_path = analysis scope
         - Without project_path, analysis is limited to single file
     """
-    # TODO: Use project_path for cross-file scenario analysis
-    # For now, single-file analysis only (to be enhanced)
-    flowchart = generate_flowchart_from_file(
-        file_path,
-        function_name=function_name,
-        max_steps=max_steps,
-        detail_level=detail_level,
-        use_llm=use_llm,
-        chat_model=chat_model,
-        ollama_base_url=ollama_base_url,
-    )
+    # Use cross-file analysis with bottom-up aggregation if project_path is provided (VERSION 4)
+    if project_path and function_name:
+        from agent5.scenario_extractor import (
+            DetailLevel,
+            extract_scenario_from_project,
+        )
+        
+        # Convert string to enum
+        detail_enum = DetailLevel.MEDIUM  # default
+        if detail_level:
+            detail_level_lower = detail_level.lower()
+            if detail_level_lower == "high":
+                detail_enum = DetailLevel.HIGH
+            elif detail_level_lower == "deep":
+                detail_enum = DetailLevel.DEEP
+        
+        # Extract cross-file scenario using bottom-up aggregation (VERSION 4)
+        sfm, metadata = extract_scenario_from_project(
+            project_path=project_path,
+            function_name=function_name,
+            file_path=file_path if file_path != project_path else None,
+            max_steps=max_steps,
+            detail_level=detail_enum,
+        )
+        
+        # Translate to Mermaid
+        mermaid = None
+        
+        if use_llm:
+            # Try LLM translation (optional, fallback if fails)
+            mermaid = _translate_sfm_with_llm(
+                sfm,
+                chat_model=chat_model or SETTINGS.ollama_chat_model,
+                ollama_base_url=ollama_base_url or SETTINGS.ollama_base_url,
+            )
+        
+        # Fallback to deterministic conversion
+        if not mermaid:
+            mermaid = _sfm_to_mermaid(sfm)
+        
+        # Count elements
+        nodes, edges = _count_mermaid_elements(mermaid)
+        
+        flowchart = MermaidFlowchart(
+            mermaid=mermaid,
+            node_count=nodes,
+            edge_count=edges,
+            sfm=sfm.to_dict(),
+        )
+    else:
+        # Single-file analysis (legacy mode)
+        flowchart = generate_flowchart_from_file(
+            file_path,
+            function_name=function_name,
+            max_steps=max_steps,
+            detail_level=detail_level,
+            use_llm=use_llm,
+            chat_model=chat_model,
+            ollama_base_url=ollama_base_url,
+        )
     
     # Write to file
     output_path.parent.mkdir(parents=True, exist_ok=True)

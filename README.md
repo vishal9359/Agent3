@@ -189,7 +189,7 @@ Generate a scenario flowchart starting from a specific entry function:
 - ❌ **WRONG:** `--file` limits analysis to that single file
 - ✅ **CORRECT:** `--file` is ONLY used to locate the entry function
 
-**How it actually works:**
+**How it actually works (v4+):**
 
 | Parameter | Purpose |
 |-----------|---------|
@@ -197,7 +197,7 @@ Generate a scenario flowchart starting from a specific entry function:
 | `--project-path` | **Analysis scope** (what to analyze) |
 
 ```bash
-# RECOMMENDED: With project path for cross-file analysis
+# RECOMMENDED: With project path for cross-file analysis (v4+)
 python -m agent5 flowchart \
   --file src/manager.cpp \
   --function CreateVolume \
@@ -206,11 +206,23 @@ python -m agent5 flowchart \
   --out create_volume_flow.mmd
 ```
 
+**🆕 Version 4: Full Cross-File Analysis**
+
 This will:
 - ✅ Start from `CreateVolume()` in `manager.cpp`
-- ✅ Follow calls to `validator.cpp`, `storage.cpp`, etc.
-- ✅ Include cross-file validations and state changes
+- ✅ **Automatically follow function calls** to `validator.cpp`, `storage.cpp`, etc.
+- ✅ Include cross-file validations, decisions, and state changes
+- ✅ Recursively analyze called functions up to 3 levels deep
+- ✅ Build a complete scenario flow across the entire project
 - ❌ **NOT** limited to `manager.cpp` only
+
+**How cross-file analysis works:**
+1. Indexes all functions across the entire project
+2. Extracts SFM for the entry function
+3. Identifies function calls (based on detail level)
+4. Follows calls to their definitions in other files
+5. Recursively extracts and integrates their SFMs
+6. Builds a unified flowchart spanning multiple files
 
 **⚠️ WARNING: Without `--project-path`:**
 ```bash
@@ -221,6 +233,8 @@ python -m agent5 flowchart \
   --out limited_flow.mmd
 ```
 Result: Shallow, incomplete flowchart (not recommended for documentation!)
+
+This will only analyze `manager.cpp` and will not follow any function calls to other files.
 
 **Auto-detect entry function:**
 
@@ -733,14 +747,31 @@ Contributions welcome! Please:
 
 ## Version History
 
-### v2.0.0 (Agent5)
-- Complete rewrite with AST-aware chunking
-- Enhanced scenario extraction with SFM
-- Fail-fast validation
-- Improved semantic understanding
-- Better error messages
+### v4.0.0 — Cross-File Scenario Analysis
+- **NEW:** Full cross-file scenario extraction following calls across files
+- **NEW:** Function indexing across entire project
+- **NEW:** Recursive SFM integration with depth limiting
+- **FIX:** `--entry-file` now correctly serves as entry-point locator only
+- **FIX:** `--project-path` properly defines analysis scope
+- **ENHANCEMENT:** Detail levels now control cross-file following depth
+- See `CHANGELOG_v4.md` for complete details
 
-### v1.0.0 (Agent3)
+### v3.0.0 — Detail Levels & Entry Disambiguation
+- **NEW:** Detail levels (`--detail-level high|medium|deep`)
+- **NEW:** Entry-file disambiguation for ambiguous functions
+- **FIX:** Detail levels produce structurally different flowcharts
+- **FIX:** Improved function discovery (recursive AST search)
+- See `CHANGELOG_v3.md` and `FIXES_v3.md` for details
+
+### v2.0.0 — Initial Agent5
+- Complete rewrite with AST-aware chunking
+- Scenario Flow Model (SFM) with deterministic extraction
+- Fail-fast validation
+- Rule-based scenario boundary enforcement
+- Semantic action collapse
+- Dual flowchart modes (project-level + entry-point)
+
+### v1.0.0 — Agent3
 - Initial version with basic RAG and flowcharts
 - Tree-sitter integration
 - Simple text-based chunking
