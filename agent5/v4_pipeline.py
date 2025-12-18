@@ -1,373 +1,295 @@
 """
-Version 4 Pipeline - DocAgent-Inspired Bottom-Up Semantic Aggregation
+V4 Pipeline: DocAgent-Inspired Bottom-Up Semantic Aggregation
 
-This module orchestrates the complete V4 pipeline:
-1. Stage 1: Full AST Construction (Clang)
-2. Stage 2: Leaf-Level Semantic Extraction
-3. Stage 3: Bottom-Up Aggregation (LLM-assisted)
-4. Stage 4: Scenario Flow Model Construction
-5. Stage 5: Detail-Level Filtering
-6. Stage 6: Mermaid Translation
+This module integrates all stages of the V4 pipeline:
+1. Clang AST + CFG extraction
+2. Leaf-level semantic extraction
+3. Bottom-up semantic aggregation (LLM-assisted)
+4. Scenario Flow Model construction
+5. Detail-level filtering
+6. Mermaid translation
 
-The pipeline produces documentation-quality scenario flowcharts.
+Entry point for generating documentation-quality flowcharts from C++ projects.
 """
 
-import json
 import logging
+import json
 from pathlib import Path
 from typing import Optional
 
-from .bottom_up_aggregator import BottomUpAggregator
-from .clang_ast_parser import CLANG_AVAILABLE, ClangASTParser, ProjectAST
-from .leaf_semantic_extractor import LeafSemanticExtractor
-from .mermaid_generator import MermaidFlowchart, MermaidGenerator
-from .sfm_constructor import DetailLevel, ScenarioFlowModel, construct_sfm
+from .clang_analyzer import ClangAnalyzer
+from .semantic_extractor import LeafSemanticExtractor
+from .semantic_aggregator import SemanticAggregator
+from .sfm_constructor import SFMConstructor, DetailLevel
+from .sfm_filter import SFMFilter
+from .mermaid_translator import MermaidTranslator
 
 logger = logging.getLogger(__name__)
 
 
 class V4Pipeline:
     """
-    Complete V4 pipeline for documentation-quality flowchart generation.
+    Complete V4 pipeline for C++ flowchart generation.
     
-    This pipeline uses a DocAgent-inspired bottom-up understanding strategy.
+    Uses DocAgent-inspired bottom-up semantic aggregation for deep understanding,
+    while maintaining scenario-based presentation.
     """
-
+    
     def __init__(
         self,
-        project_path: Path,
-        chat_model: Optional[str] = None,
-        ollama_base_url: Optional[str] = None,
+        project_path: str,
+        model_name: str = "llama3.2:3b",
+        use_llm_translator: bool = True
     ):
         """
-        Initialize the V4 pipeline.
+        Initialize the V4 pipeline
         
         Args:
-            project_path: Root path of the C++ project
-            chat_model: Ollama chat model for LLM-assisted aggregation
-            ollama_base_url: Ollama server URL
+            project_path: Root path of C++ project
+            model_name: Ollama model for LLM stages
+            use_llm_translator: Whether to use LLM for Mermaid translation
         """
-        self.project_path = project_path
-        self.chat_model = chat_model
-        self.ollama_base_url = ollama_base_url
+        self.project_path = Path(project_path)
+        self.model_name = model_name
         
-        # Pipeline components
-        self.ast_parser: Optional[ClangASTParser] = None
-        self.project_ast: Optional[ProjectAST] = None
-        self.leaf_extractor: Optional[LeafSemanticExtractor] = None
-        self.aggregator: Optional[BottomUpAggregator] = None
-        self.sfm: Optional[ScenarioFlowModel] = None
+        # Initialize pipeline components
+        logger.info("Initializing V4 pipeline components...")
+        
+        # Stage 1: Clang Analyzer
+        self.analyzer = ClangAnalyzer(str(self.project_path))
+        
+        # Stage 2: Leaf Semantic Extractor
+        self.semantic_extractor = LeafSemanticExtractor()
+        
+        # Stage 3: Semantic Aggregator (LLM-assisted)
+        self.aggregator = SemanticAggregator(model_name=model_name)
+        
+        # Stage 4: SFM Constructor
+        self.sfm_constructor = SFMConstructor()
+        
+        # Stage 5: SFM Filter
+        self.sfm_filter = SFMFilter()
+        
+        # Stage 6: Mermaid Translator
+        self.mermaid_translator = MermaidTranslator(
+            model_name=model_name,
+            use_llm=use_llm_translator
+        )
+        
+        logger.info("V4 pipeline initialized successfully")
     
-    def run(
+    def generate_flowchart(
         self,
-        entry_file: Path,
-        entry_function: Optional[str] = None,
-        detail_level: str = "medium",
-        output_path: Optional[Path] = None,
-    ) -> MermaidFlowchart:
-        """
-        Run the complete V4 pipeline.
-        
-        Args:
-            entry_file: Path to file containing entry function (for locating only)
-            entry_function: Entry function name (auto-detect if None)
-            detail_level: Detail level (high|medium|deep)
-            output_path: Optional path to save .mmd file
-        
-        Returns:
-            MermaidFlowchart object
-        """
-        logger.info("=" * 60)
-        logger.info("V4 Pipeline: DocAgent-Inspired Bottom-Up Semantic Aggregation")
-        logger.info("=" * 60)
-        
-        # Stage 1: Full AST Construction
-        logger.info("\n[Stage 1] Full AST Construction (NO LLM)")
-        self._stage1_ast_construction()
-        
-        # Stage 2: Leaf-Level Semantic Extraction
-        logger.info("\n[Stage 2] Leaf-Level Semantic Extraction")
-        leaf_semantics = self._stage2_leaf_extraction()
-        
-        # Resolve entry function
-        resolved_entry = self._resolve_entry_function(entry_file, entry_function)
-        
-        # Stage 3: Bottom-Up Aggregation
-        logger.info(f"\n[Stage 3] Bottom-Up Aggregation from entry: {resolved_entry}")
-        aggregated_semantics = self._stage3_bottom_up_aggregation(resolved_entry, leaf_semantics)
-        
-        # Stage 4: Scenario Flow Model Construction
-        logger.info("\n[Stage 4] Scenario Flow Model Construction")
-        self.sfm = self._stage4_sfm_construction(resolved_entry, aggregated_semantics, leaf_semantics)
-        
-        # Stage 5: Detail-Level Filtering
-        logger.info(f"\n[Stage 5] Detail-Level Filtering (level={detail_level})")
-        filtered_sfm = self._stage5_detail_filtering(self.sfm, DetailLevel[detail_level.upper()])
-        
-        # Stage 6: Mermaid Translation
-        logger.info("\n[Stage 6] Mermaid Translation (LLM STRICT TRANSLATOR)")
-        flowchart = self._stage6_mermaid_translation(filtered_sfm, use_llm=bool(self.chat_model))
-        
-        # Save if output path provided
-        if output_path:
-            output_path.parent.mkdir(parents=True, exist_ok=True)
-            output_path.write_text(flowchart.to_mermaid(), encoding="utf-8")
-            logger.info(f"\n✓ Flowchart saved to: {output_path}")
-        
-        logger.info("\n" + "=" * 60)
-        logger.info("V4 Pipeline Complete")
-        logger.info("=" * 60)
-        
-        return flowchart
-    
-    def _stage1_ast_construction(self):
-        """Stage 1: Parse entire C++ project using Clang AST."""
-        if not CLANG_AVAILABLE:
-            logger.warning(
-                "Clang AST not available - falling back to tree-sitter (limited functionality)"
-            )
-            # TODO: Implement tree-sitter fallback
-            raise RuntimeError(
-                "Clang AST is required for V4 pipeline. Please install libclang."
-            )
-        
-        logger.info(f"Parsing C++ project at: {self.project_path}")
-        self.ast_parser = ClangASTParser(self.project_path)
-        self.project_ast = self.ast_parser.parse_project()
-        
-        logger.info(f"  ✓ Parsed {len(self.project_ast.function_cfgs)} functions")
-        logger.info(f"  ✓ Found {len(self.project_ast.leaf_functions)} leaf functions")
-        logger.info(f"  ✓ Identified {len(self.project_ast.entry_points)} potential entry points")
-    
-    def _stage2_leaf_extraction(self):
-        """Stage 2: Extract atomic semantic actions at leaf level."""
-        logger.info("Extracting leaf-level semantics...")
-        
-        self.leaf_extractor = LeafSemanticExtractor(self.project_ast)
-        leaf_semantics = self.leaf_extractor.extract_semantics()
-        
-        logger.info(f"  ✓ Extracted semantics for {len(leaf_semantics)} functions")
-        
-        return leaf_semantics
-    
-    def _resolve_entry_function(
-        self, entry_file: Path, entry_function: Optional[str]
+        entry_function: str,
+        entry_file: Optional[str] = None,
+        detail_level: DetailLevel = DetailLevel.MEDIUM,
+        scenario_name: Optional[str] = None,
+        output_dir: Optional[str] = None
     ) -> str:
         """
-        Resolve the entry function name.
+        Generate a flowchart for a C++ scenario using the V4 pipeline.
         
         Args:
-            entry_file: File containing entry function (for disambiguation)
-            entry_function: Function name (or None for auto-detect)
-        
+            entry_function: Name of the entry function
+            entry_file: Optional file path to disambiguate entry function
+            detail_level: Level of detail (HIGH, MEDIUM, DEEP)
+            scenario_name: Optional name for the scenario
+            output_dir: Optional directory to save intermediate outputs
+            
         Returns:
-            Resolved fully-qualified function name
-        
-        Raises:
-            ValueError: If function cannot be resolved
+            Mermaid flowchart code as string
         """
-        # If function name provided, search for it
-        if entry_function:
-            # Search in specified file first
-            candidates = []
+        logger.info("=" * 70)
+        logger.info("V4 PIPELINE: Starting flowchart generation")
+        logger.info(f"Entry function: {entry_function}")
+        logger.info(f"Entry file: {entry_file or 'auto-detect'}")
+        logger.info(f"Detail level: {detail_level.value}")
+        logger.info("=" * 70)
+        
+        # Create output directory if specified
+        output_path = None
+        if output_dir:
+            output_path = Path(output_dir)
+            output_path.mkdir(parents=True, exist_ok=True)
+        
+        # Stage 1: Full AST Construction
+        logger.info("\n[STAGE 1] Full AST Construction (NO LLM)")
+        logger.info("-" * 70)
+        
+        file_patterns = ['*.cpp', '*.cc', '*.cxx', '*.c++']
+        if entry_file:
+            # If entry file specified, analyze it and related files
+            file_patterns.append(entry_file)
+        
+        self.analyzer.analyze_project(file_patterns)
+        logger.info(f"✓ Analyzed {len(self.analyzer.translation_units)} files")
+        logger.info(f"✓ Built {len(self.analyzer.function_cfgs)} function CFGs")
+        logger.info(f"✓ Extracted {len(self.analyzer.call_graph)} call relations")
+        
+        # Resolve entry function
+        qualified_entry = self._resolve_entry_function(entry_function, entry_file)
+        if not qualified_entry:
+            raise ValueError(f"Cannot find entry function '{entry_function}' in project")
+        
+        logger.info(f"✓ Resolved entry function: {qualified_entry}")
+        
+        # Stage 2: Leaf-Level Semantic Extraction
+        logger.info("\n[STAGE 2] Leaf-Level Semantic Extraction (BOTTOM LEVEL)")
+        logger.info("-" * 70)
+        
+        total_actions = 0
+        for func_name, cfg in self.analyzer.function_cfgs.items():
+            actions = self.semantic_extractor.extract_from_cfg(cfg)
+            total_actions += len(actions)
+        
+        logger.info(f"✓ Extracted {total_actions} semantic actions from all functions")
+        
+        # Stage 3: Bottom-Up Semantic Aggregation
+        logger.info("\n[STAGE 3] Bottom-Up Backtracking & Semantic Aggregation (LLM-ASSISTED)")
+        logger.info("-" * 70)
+        
+        summaries = self.aggregator.aggregate(
+            self.analyzer,
+            self.semantic_extractor,
+            qualified_entry
+        )
+        
+        logger.info(f"✓ Generated {len(summaries)} function semantic summaries")
+        
+        # Export summaries if output dir specified
+        if output_path:
+            summaries_file = output_path / "semantic_summaries.json"
+            self.aggregator.export_summaries(str(summaries_file))
+            logger.info(f"✓ Exported summaries to {summaries_file}")
+        
+        # Get entry function summary
+        entry_summary = self.aggregator.get_summary(qualified_entry)
+        if not entry_summary:
+            raise ValueError(f"Failed to generate summary for entry function '{qualified_entry}'")
+        
+        # Stage 4: Scenario Flow Model Construction
+        logger.info("\n[STAGE 4] Scenario Flow Model Construction (SINGLE SOURCE OF TRUTH)")
+        logger.info("-" * 70)
+        
+        sfm = self.sfm_constructor.construct(
+            entry_function=qualified_entry,
+            semantic_summary=entry_summary,
+            scenario_name=scenario_name or entry_function
+        )
+        
+        logger.info(f"✓ Constructed SFM with {len(sfm.nodes)} nodes")
+        logger.info(f"  - Start node: {sfm.start_node_id}")
+        logger.info(f"  - End nodes: {', '.join(sfm.end_node_ids)}")
+        
+        # Validate SFM
+        errors = sfm.validate()
+        if errors:
+            logger.warning(f"SFM validation warnings: {errors}")
+        else:
+            logger.info("✓ SFM validation passed")
+        
+        # Export SFM if output dir specified
+        if output_path:
+            sfm_file = output_path / "scenario_flow_model.json"
+            self.sfm_constructor.export_sfm(sfm, str(sfm_file))
+            logger.info(f"✓ Exported SFM to {sfm_file}")
+        
+        # Stage 5: Detail-Level Filtering
+        logger.info("\n[STAGE 5] Detail-Level Filtering (RULE-BASED)")
+        logger.info("-" * 70)
+        
+        filtered_sfm = self.sfm_filter.filter(sfm, detail_level)
+        
+        logger.info(f"✓ Filtered to {len(filtered_sfm.nodes)} nodes at {detail_level.value} level")
+        
+        # Export filtered SFM if output dir specified
+        if output_path:
+            filtered_sfm_file = output_path / f"sfm_filtered_{detail_level.value}.json"
+            with open(filtered_sfm_file, 'w') as f:
+                json.dump(filtered_sfm.to_dict(), f, indent=2)
+            logger.info(f"✓ Exported filtered SFM to {filtered_sfm_file}")
+        
+        # Stage 6: Mermaid Translation
+        logger.info("\n[STAGE 6] Mermaid Translation (LLM STRICT TRANSLATOR)")
+        logger.info("-" * 70)
+        
+        mermaid_code = self.mermaid_translator.translate(filtered_sfm)
+        
+        logger.info(f"✓ Generated Mermaid flowchart ({len(mermaid_code)} characters)")
+        
+        # Save Mermaid code if output dir specified
+        if output_path:
+            mermaid_file = output_path / f"flowchart_{detail_level.value}.mmd"
+            with open(mermaid_file, 'w') as f:
+                f.write(mermaid_code)
+            logger.info(f"✓ Saved Mermaid code to {mermaid_file}")
+        
+        logger.info("\n" + "=" * 70)
+        logger.info("V4 PIPELINE: Flowchart generation complete!")
+        logger.info("=" * 70)
+        
+        return mermaid_code
+    
+    def _resolve_entry_function(
+        self,
+        function_name: str,
+        entry_file: Optional[str] = None
+    ) -> Optional[str]:
+        """
+        Resolve entry function to its qualified name.
+        
+        Args:
+            function_name: Simple or qualified function name
+            entry_file: Optional file path to disambiguate
             
-            for func_name, cfg in self.project_ast.function_cfgs.items():
-                if entry_function in func_name:
-                    # Check if it's in the specified file
-                    if str(entry_file) in cfg.file_path or entry_file.name in cfg.file_path:
-                        return func_name
-                    candidates.append(func_name)
-            
-            # If not found in specified file, check all candidates
-            if len(candidates) == 1:
-                logger.warning(
-                    f"Function '{entry_function}' not found in {entry_file}, "
-                    f"using match from {self.project_ast.function_cfgs[candidates[0]].file_path}"
-                )
-                return candidates[0]
-            elif len(candidates) > 1:
-                raise ValueError(
-                    f"Ambiguous function name '{entry_function}'. Found {len(candidates)} matches:\n"
-                    + "\n".join(f"  - {c}" for c in candidates)
-                    + "\nPlease specify --entry-file to disambiguate."
-                )
-            else:
-                # Try exact match
-                if entry_function in self.project_ast.function_cfgs:
-                    return entry_function
+        Returns:
+            Qualified function name, or None if not found/ambiguous
+        """
+        # Find all matching functions
+        matches = []
+        
+        for qualified_name in self.analyzer.function_cfgs.keys():
+            # Check if function name matches
+            if qualified_name == function_name or qualified_name.endswith(f"::{function_name}"):
+                cfg = self.analyzer.function_cfgs[qualified_name]
                 
-                raise ValueError(
-                    f"Function '{entry_function}' not found. "
-                    f"Available functions in {entry_file}:\n"
-                    + "\n".join(
-                        f"  - {name}"
-                        for name, cfg in self.project_ast.function_cfgs.items()
-                        if str(entry_file) in cfg.file_path or entry_file.name in cfg.file_path
-                    )
-                )
+                # If entry_file specified, check file match
+                if entry_file:
+                    if Path(cfg.file_path).name == Path(entry_file).name:
+                        matches.append(qualified_name)
+                else:
+                    matches.append(qualified_name)
         
-        # Auto-detect: use entry points from AST
-        if self.project_ast.entry_points:
-            # Prefer functions in the specified file
-            for func_name in self.project_ast.entry_points:
-                cfg = self.project_ast.function_cfgs[func_name]
-                if str(entry_file) in cfg.file_path or entry_file.name in cfg.file_path:
-                    logger.info(f"Auto-detected entry function: {func_name}")
-                    return func_name
+        if len(matches) == 0:
+            logger.error(f"No function named '{function_name}' found")
+            logger.info("Available functions:")
+            for qname in sorted(self.analyzer.function_cfgs.keys())[:20]:
+                logger.info(f"  - {qname}")
+            return None
+        
+        if len(matches) == 1:
+            return matches[0]
+        
+        if len(matches) > 1:
+            if entry_file:
+                logger.error(f"Multiple matches for '{function_name}' in '{entry_file}':")
+            else:
+                logger.error(f"Ambiguous function name '{function_name}'. Please specify --entry-file:")
             
-            # Use any entry point
-            func_name = next(iter(self.project_ast.entry_points))
-            logger.info(f"Auto-detected entry function: {func_name}")
-            return func_name
+            for match in matches:
+                cfg = self.analyzer.function_cfgs[match]
+                logger.info(f"  - {match} in {cfg.file_path}")
+            
+            return None
         
-        raise ValueError(
-            "Could not auto-detect entry function. Please specify --function explicitly."
-        )
+        return None
     
-    def _stage3_bottom_up_aggregation(self, entry_function: str, leaf_semantics):
-        """Stage 3: Bottom-up semantic aggregation (LLM-assisted)."""
-        logger.info(f"Starting bottom-up aggregation from: {entry_function}")
-        
-        self.aggregator = BottomUpAggregator(
-            project_ast=self.project_ast,
-            leaf_semantics=leaf_semantics,
-            chat_model=self.chat_model,
-            ollama_base_url=self.ollama_base_url,
-        )
-        
-        aggregated_semantics = self.aggregator.aggregate(entry_function)
-        
-        logger.info(f"  ✓ Aggregated {len(aggregated_semantics)} functions")
-        
-        # Log entry function summary
-        entry_summary = self.aggregator.get_entry_summary(entry_function)
-        if entry_summary:
-            logger.info(f"  Entry function summary: {entry_summary.semantic_summary}")
-        
-        return aggregated_semantics
-    
-    def _stage4_sfm_construction(
-        self, entry_function: str, aggregated_semantics, leaf_semantics
-    ) -> ScenarioFlowModel:
-        """Stage 4: Construct Scenario Flow Model."""
-        logger.info(f"Constructing Scenario Flow Model for: {entry_function}")
-        
-        sfm = construct_sfm(entry_function, aggregated_semantics, leaf_semantics)
-        
-        logger.info(f"  ✓ SFM constructed with {len(sfm.steps)} steps")
-        logger.info(f"  ✓ Scenario: {sfm.scenario_name}")
-        
-        return sfm
-    
-    def _stage5_detail_filtering(
-        self, sfm: ScenarioFlowModel, detail_level: DetailLevel
-    ) -> ScenarioFlowModel:
-        """Stage 5: Filter SFM by detail level."""
-        logger.info(f"Filtering SFM for detail level: {detail_level.value}")
-        
-        # Create filtered SFM
-        filtered_sfm = ScenarioFlowModel(
-            entry_function=sfm.entry_function,
-            scenario_name=sfm.scenario_name,
-            start_step=sfm.start_step,
-            metadata=sfm.metadata,
-        )
-        
-        # Filter steps by detail level
-        for step_id, step in sfm.steps.items():
-            if detail_level in step.detail_levels:
-                filtered_sfm.steps[step_id] = step
-        
-        # Update end steps
-        filtered_sfm.end_steps = [
-            end_id for end_id in sfm.end_steps if end_id in filtered_sfm.steps
-        ]
-        
-        # Clean up references to filtered-out steps
-        for step in filtered_sfm.steps.values():
-            step.next_steps = [
-                next_id for next_id in step.next_steps if next_id in filtered_sfm.steps
-            ]
-            if step.on_fail and step.on_fail not in filtered_sfm.steps:
-                step.on_fail = None
-            if step.on_success and step.on_success not in filtered_sfm.steps:
-                step.on_success = None
-        
-        logger.info(
-            f"  ✓ Filtered from {len(sfm.steps)} to {len(filtered_sfm.steps)} steps"
-        )
-        
-        return filtered_sfm
-    
-    def _stage6_mermaid_translation(
-        self, sfm: ScenarioFlowModel, use_llm: bool
-    ) -> MermaidFlowchart:
-        """Stage 6: Translate SFM to Mermaid (LLM as strict translator)."""
-        logger.info("Translating SFM to Mermaid...")
-        
-        generator = MermaidGenerator(
-            chat_model=self.chat_model if use_llm else None,
-            ollama_base_url=self.ollama_base_url if use_llm else None,
-        )
-        
-        flowchart = generator.generate_from_sfm(sfm)
-        
-        logger.info(f"  ✓ Generated Mermaid flowchart with {len(flowchart.nodes)} nodes")
-        
-        return flowchart
-    
-    def export_sfm_json(self, output_path: Path):
-        """Export SFM as JSON for inspection/debugging."""
-        if not self.sfm:
-            raise ValueError("No SFM available - run pipeline first")
-        
-        from .sfm_constructor import SFMConstructor
-        
-        # Create a temporary constructor just to use its to_dict method
-        constructor = SFMConstructor("", {}, {})
-        constructor.sfm = self.sfm
-        
-        sfm_dict = constructor.to_dict()
-        
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(json.dumps(sfm_dict, indent=2), encoding="utf-8")
-        
-        logger.info(f"SFM exported to: {output_path}")
-
-
-def generate_v4_flowchart(
-    project_path: Path,
-    entry_file: Path,
-    entry_function: Optional[str] = None,
-    detail_level: str = "medium",
-    output_path: Optional[Path] = None,
-    chat_model: Optional[str] = None,
-    ollama_base_url: Optional[str] = None,
-) -> MermaidFlowchart:
-    """
-    Convenience function to run the V4 pipeline.
-    
-    Args:
-        project_path: Root path of the C++ project
-        entry_file: Path to file containing entry function
-        entry_function: Entry function name (auto-detect if None)
-        detail_level: Detail level (high|medium|deep)
-        output_path: Optional path to save .mmd file
-        chat_model: Ollama chat model name
-        ollama_base_url: Ollama server URL
-    
-    Returns:
-        MermaidFlowchart object
-    """
-    pipeline = V4Pipeline(
-        project_path=project_path,
-        chat_model=chat_model,
-        ollama_base_url=ollama_base_url,
-    )
-    
-    return pipeline.run(
-        entry_file=entry_file,
-        entry_function=entry_function,
-        detail_level=detail_level,
-        output_path=output_path,
-    )
+    def get_pipeline_stats(self) -> dict:
+        """Get statistics about the pipeline execution"""
+        return {
+            "files_analyzed": len(self.analyzer.translation_units),
+            "functions_found": len(self.analyzer.function_cfgs),
+            "call_relations": len(self.analyzer.call_graph),
+            "leaf_functions": len(self.analyzer.get_leaf_functions()),
+            "semantic_summaries": len(self.aggregator.summaries)
+        }

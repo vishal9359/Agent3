@@ -1,987 +1,601 @@
-# Version 4 Architecture: DocAgent-Inspired Bottom-Up Aggregation
-
-## Table of Contents
-
-1. [Overview](#overview)
-2. [Core Philosophy](#core-philosophy)
-3. [Complete Pipeline](#complete-pipeline)
-4. [Detailed Stage Breakdown](#detailed-stage-breakdown)
-5. [Data Flow](#data-flow)
-6. [Critical Design Decisions](#critical-design-decisions)
-7. [Usage Examples](#usage-examples)
-8. [Technical Deep Dive](#technical-deep-dive)
-
----
+# Agent5 V4: DocAgent-Inspired Bottom-Up Architecture
 
 ## Overview
 
-Agent5 Version 4 implements a revolutionary **DocAgent-inspired bottom-up semantic aggregation pipeline** for generating documentation-quality scenario flowcharts from C++ projects.
-
-### The Core Insight
-
-> **Understanding flows bottom-up, presentation remains scenario-driven.**
-
-This architectural principle enables Agent5 to:
-- **Understand** complex C++ codebases by building meaning from leaf nodes upward
-- **Present** clean, scenario-based flowcharts without function-call explosions
-- **Scale** to large projects with deep call graphs
-- **Maintain** deterministic, rule-based extraction throughout
-
----
+Version 4 introduces a **DocAgent-inspired bottom-up semantic aggregation pipeline** for generating documentation-quality C++ flowcharts. This is a fundamental architectural shift from the previous tree-sitter based approach.
 
 ## Core Philosophy
 
-### What Changed from V3
+### Understanding vs. Visualization
 
-| Aspect | Version 3 | Version 4 |
-|--------|-----------|-----------|
-| **Understanding** | Top-down, single function | Bottom-up, full call graph |
-| **Scope** | Single file | Entire project |
-| **Semantic Analysis** | Surface-level | Deep, hierarchical |
-| **LLM Role** | Diagram generator | Semantic synthesizer only |
-| **Scalability** | Limited to simple functions | Handles complex projects |
+The key insight is to **separate understanding from visualization**:
 
-### Three Critical Constraints
+- **Understanding flows bottom-up** (leaf functions → entry function)
+- **Visualization remains scenario-based** (high-level, never function-call diagrams)
 
-#### ❌ Constraint 1: No Function-Call Diagrams
+This distinction is critical for producing accurate, documentation-grade flowcharts.
 
-Version 4 **never** generates function-call graphs. Every function call is **collapsed into a semantic step**.
+## Pipeline Architecture
 
-**Bad (function-call diagram)**:
-```
-Start → func1() → func2() → func3() → End
-```
-
-**Good (scenario diagram)**:
-```
-Start → Validate Request → Process Operation → Update State → End
-```
-
-#### ❌ Constraint 2: No LLM Logic Inference
-
-LLM is used **strictly for semantic synthesis**, never for logic inference.
-
-- ✅ Allowed: "Synthesize natural language description from these facts..."
-- ❌ Forbidden: "What does this code do?"
-
-#### ✅ Constraint 3: Scenario Flow Model is Authoritative
-
-The **Scenario Flow Model (SFM)** is the single source of truth. It must exist and be validated **before** any diagram is generated.
+### 6-Stage Pipeline
 
 ```
-Pipeline:  AST → SFM (REQUIRED) → Mermaid
-NOT:       Code → LLM → Diagram
+C++ Project
+    ↓
+[Stage 1] Full AST Construction (Clang)
+    ↓
+[Stage 2] Leaf-Level Semantic Extraction
+    ↓
+[Stage 3] Bottom-Up Backtracking & Aggregation (LLM-Assisted)
+    ↓
+[Stage 4] Scenario Flow Model Construction
+    ↓
+[Stage 5] Detail-Level Filtering (high/medium/deep)
+    ↓
+[Stage 6] Mermaid Translation (LLM Strict Translator)
+    ↓
+Mermaid Flowchart
 ```
 
 ---
 
-## Complete Pipeline
+## Stage 1: Full AST Construction
 
-### Six Mandatory Stages
+**Module:** `clang_ast_extractor.py`
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                      STAGE 1: Full AST Construction              │
-│                           (NO LLM)                               │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │ • Parse entire project with Clang                        │   │
-│  │ • Build AST + CFG for all functions                      │   │
-│  │ • Extract call relationships                             │   │
-│  │ • Identify leaf-level execution units                    │   │
-│  │ • Detect guard conditions, state mutations, error exits  │   │
-│  └─────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
-                               ↓
-┌─────────────────────────────────────────────────────────────────┐
-│                STAGE 2: Leaf-Level Semantic Extraction           │
-│                        (BOTTOM LEVEL)                            │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │ Identify atomic semantic actions:                        │   │
-│  │ • validation: Check inputs                               │   │
-│  │ • permission_check: Verify authorization                 │   │
-│  │ • state_mutation: Modify state                           │   │
-│  │ • irreversible_side_effect: I/O, persistence             │   │
-│  │ • early_exit: Error handling                             │   │
-│  └─────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
-                               ↓
-┌─────────────────────────────────────────────────────────────────┐
-│         STAGE 3: Bottom-Up Backtracking & Aggregation            │
-│                       (LLM-ASSISTED)                             │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │ Process: leaf → intermediate → entry                     │   │
-│  │                                                           │   │
-│  │ For each function (bottom-up):                           │   │
-│  │   1. Collect leaf semantic actions                       │   │
-│  │   2. Collect summaries of called functions               │   │
-│  │   3. Synthesize semantic summary (LLM or deterministic)  │   │
-│  │   4. Preserve control-flow & state semantics             │   │
-│  │   5. Elide non-critical operations                       │   │
-│  └─────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
-                               ↓
-┌─────────────────────────────────────────────────────────────────┐
-│          STAGE 4: Scenario Flow Model Construction               │
-│                  (SINGLE SOURCE OF TRUTH)                        │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │ Convert aggregated semantics to SFM:                     │   │
-│  │ • One SFM per entry-point scenario                       │   │
-│  │ • Explicit mapping to detail levels                      │   │
-│  │ • Deterministic construction rules                       │   │
-│  │ • Strict validation (1 start, ≥1 end, valid edges)      │   │
-│  └─────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
-                               ↓
-┌─────────────────────────────────────────────────────────────────┐
-│             STAGE 5: Detail-Level Filtering                      │
-│                      (RULE-BASED)                                │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │ Filter SFM by detail level:                              │   │
-│  │ • HIGH:   Only business-level steps                      │   │
-│  │ • MEDIUM: + validations + state changes                  │   │
-│  │ • DEEP:   + critical sub-operations                      │   │
-│  └─────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
-                               ↓
-┌─────────────────────────────────────────────────────────────────┐
-│              STAGE 6: Mermaid Translation                        │
-│                  (LLM STRICT TRANSLATOR)                         │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │ Convert SFM to Mermaid:                                  │   │
-│  │ • Input: SFM (JSON)                                      │   │
-│  │ • Output: Mermaid syntax ONLY                            │   │
-│  │ • Try LLM translation (optional)                         │   │
-│  │ • Fallback to deterministic                              │   │
-│  │ • No logic changes, no depth changes                     │   │
-│  └─────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────┘
-```
+**Purpose:** Parse the entire C++ project using libclang to extract comprehensive structural information.
 
----
+**NO LLM at this stage.**
 
-## Detailed Stage Breakdown
+### Extracts:
 
-### Stage 1: Full AST Construction
+1. **Abstract Syntax Tree (AST)** for all translation units
+2. **Control Flow Graphs (CFG)** per function
+   - Basic blocks
+   - Predecessors/successors
+   - Entry/exit blocks
+3. **Call relationships**
+   - Caller → Callee mapping
+   - Call sites with context
+4. **Leaf-level execution units**
+   - Guard conditions
+   - State mutations
+   - Error exits
 
-**Module**: `clang_ast_extractor.py`
+### Key Classes:
 
-**Input**: C++ project path, compile flags  
-**Output**: `ProjectAST` object
+- `ProjectAST`: Complete AST representation
+- `ControlFlowGraph`: CFG per function
+- `BasicBlock`: Single-entry, single-exit code blocks
+- `CallRelationship`: Caller-callee relationships
 
-**Process**:
-1. Find all C++ source files (`.cpp`, `.cc`, `.cxx`)
-2. Parse each file with Clang AST
-3. For each function:
-   - Extract function metadata (name, return type, parameters)
-   - Build Control-Flow Graph (CFG)
-   - Identify basic blocks
-   - Extract guard conditions (if/while/for)
-   - Extract state mutations (assignments, modifications)
-   - Identify function calls
-4. Build call graph (forward and reverse)
-5. Classify functions:
-   - Leaf functions (no calls)
-   - Entry points (never called)
-
-**Key Data Structures**:
+### Example:
 
 ```python
-@dataclass
-class FunctionInfo:
-    name: str
-    file_path: str
-    start_line: int
-    end_line: int
-    return_type: str
-    parameters: List[Tuple[str, str]]
-    is_leaf: bool
-    basic_blocks: List[BasicBlock]
-    guard_conditions: List[GuardCondition]
-    state_mutations: List[StateMutation]
-    calls_made: List[FunctionCallSite]
-```
+from agent5.clang_ast_extractor import extract_ast_for_project
 
-### Stage 2: Leaf-Level Semantic Extraction
-
-**Module**: `leaf_semantic_extractor.py`
-
-**Input**: `FunctionInfo` with CFG  
-**Output**: List of `SemanticAction`
-
-**Atomic Action Types**:
-
-| Type | Description | Examples |
-|------|-------------|----------|
-| `VALIDATION` | Input/data checks | `if (ptr == nullptr)`, `if (size == 0)` |
-| `PERMISSION_CHECK` | Authorization | `if (!has_permission())` |
-| `STATE_MUTATION` | State modification | `count++`, `data[i] = value` |
-| `IRREVERSIBLE_SIDE_EFFECT` | Persistent changes | `file.write()`, `db.commit()` |
-| `EARLY_EXIT` | Error handling | `return error;`, `throw exception;` |
-
-**Example Output**:
-
-```python
-SemanticAction(
-    id="action_1",
-    action_type=SemanticActionType.VALIDATION,
-    effect="Validate input not null",
-    control_impact=True,
-    state_impact=False,
-    reversible=True,
-    criticality="medium"
+project_ast = extract_ast_for_project(
+    project_path=Path("/path/to/project"),
+    include_paths=[Path("/usr/include")]
 )
-```
 
-### Stage 3: Bottom-Up Aggregation
-
-**Module**: `bottom_up_aggregator.py`
-
-**Input**: `ProjectAST`, entry function name  
-**Output**: `AggregatedSemantics`
-
-**Algorithm**:
-
-```python
-def aggregate_bottom_up(entry_function):
-    # 1. Compute processing order (reverse topological sort)
-    order = compute_call_order(entry_function)  # [leaf1, leaf2, ..., entry]
-    
-    # 2. Process each function bottom-up
-    for func_name in order:
-        # Extract leaf actions
-        leaf_actions = extract_leaf_semantics(func_name)
-        
-        # Get summaries of called functions (already processed)
-        called_summaries = [summaries[callee] for callee in calls_to(func_name)]
-        
-        # Aggregate into function summary
-        summary = aggregate_function(
-            func_name,
-            leaf_actions,
-            called_summaries,
-            llm=llm  # Optional LLM for synthesis
-        )
-        
-        summaries[func_name] = summary
-    
-    return summaries
-```
-
-**Key Insight**: By processing in reverse topological order, we ensure that when processing a function, all its callees have already been summarized. This enables semantic aggregation without expansion.
-
-### Stage 4: Scenario Flow Model Construction
-
-**Module**: `sfm_constructor.py`
-
-**Input**: `AggregatedSemantics`  
-**Output**: `ScenarioFlowModel`
-
-**Construction Rules**:
-
-1. **Start with terminator nodes**: `start` and `end`
-2. **Add business logic node**: Entry function's semantic description
-3. **For MEDIUM and DEEP**: Add validation decision nodes
-4. **For MEDIUM and DEEP**: Add state change process nodes
-5. **For DEEP only**: Add critical called function nodes
-6. **Connect nodes**: Ensure all paths reach `end`
-7. **Validate**: Check structure (1 start, ≥1 end, valid edges)
-
-**Detail Level Mapping**:
-
-```python
-nodes = [
-    SFMNode(id="business_1", label="Process Request",
-            detail_levels=["high", "medium", "deep"]),
-    
-    SFMNode(id="validation_1", label="Validate Input?",
-            detail_levels=["medium", "deep"]),
-    
-    SFMNode(id="critical_1", label="Load Data",
-            detail_levels=["deep"])
-]
-```
-
-### Stage 5: Detail-Level Filtering
-
-**Integrated in**: `ScenarioFlowModel.filter_by_detail_level()`
-
-**Rules**:
-
-```python
-def filter_by_detail_level(sfm, level):
-    # Include only nodes with matching detail level
-    nodes = [n for n in sfm.nodes if level in n.detail_levels]
-    
-    # Include only edges between included nodes
-    node_ids = {n.id for n in nodes}
-    edges = [e for e in sfm.edges 
-             if e.src in node_ids and e.dst in node_ids]
-    
-    return ScenarioFlowModel(nodes=nodes, edges=edges)
-```
-
-**Effect**:
-
-| Level | Node Count | Typical Use Case |
-|-------|------------|------------------|
-| `high` | 3-5 | Architecture overview |
-| `medium` | 8-15 | Documentation |
-| `deep` | 15-30 | Detailed analysis |
-
-### Stage 6: Mermaid Translation
-
-**Module**: `flowchart.py`
-
-**Two Translation Modes**:
-
-1. **LLM Translation** (optional):
-   ```python
-   def translate_with_llm(sfm):
-       prompt = f"Translate this SFM to Mermaid: {sfm.to_json()}"
-       response = llm.invoke(prompt)
-       return extract_mermaid(response)
-   ```
-
-2. **Deterministic Translation** (fallback):
-   ```python
-   def sfm_to_mermaid(sfm):
-       lines = ["flowchart TD"]
-       for node in sfm.nodes:
-           if node.type == "decision":
-               lines.append(f"  {node.id}{{{node.label}?}}")
-           else:
-               lines.append(f"  {node.id}[{node.label}]")
-       for edge in sfm.edges:
-           lines.append(f"  {edge.src} --> {edge.dst}")
-       return "\n".join(lines)
-   ```
-
-**Quality Assurance**:
-- Always validate Mermaid syntax
-- Count nodes and edges
-- Fall back to deterministic if LLM fails
-- Save SFM alongside Mermaid for debugging
-
----
-
-## Data Flow
-
-### From C++ Code to Flowchart
-
-```
-┌─────────────┐
-│  C++ Code   │ (Project directory)
-└──────┬──────┘
-       │ Stage 1: Parse with Clang
-       ↓
-┌─────────────┐
-│ ProjectAST  │ (AST + CFG + Call Graph)
-└──────┬──────┘
-       │ Stage 2: Extract atomic semantics
-       ↓
-┌───────────────┐
-│ Semantic      │ (validation, state_mutation, etc.)
-│ Actions       │
-└───────┬───────┘
-        │ Stage 3: Aggregate bottom-up
-        ↓
-┌────────────────┐
-│ Function       │ (Semantic summaries per function)
-│ Summaries      │
-└────────┬───────┘
-         │ Stage 4: Construct SFM
-         ↓
-┌────────────────┐
-│ Scenario Flow  │ (JSON, authoritative)
-│ Model (SFM)    │
-└────────┬───────┘
-         │ Stage 5: Filter by detail level
-         ↓
-┌────────────────┐
-│ Filtered SFM   │
-└────────┬───────┘
-         │ Stage 6: Translate to Mermaid
-         ↓
-┌────────────────┐
-│ Mermaid        │ (Final flowchart)
-│ Flowchart      │
-└────────────────┘
+print(f"Functions: {len(project_ast.functions)}")
+print(f"Call relationships: {len(project_ast.call_graph)}")
 ```
 
 ---
 
-## Critical Design Decisions
+## Stage 2: Leaf-Level Semantic Extraction
 
-### Decision 1: Why Bottom-Up?
+**Module:** `leaf_semantic_extractor.py`
 
-**Problem**: Top-down analysis of C++ code leads to:
-- Function-call explosions
-- Inability to handle deep call stacks
-- Loss of semantic meaning in utility calls
+**Purpose:** Identify atomic semantic actions at the deepest AST/CFG level.
 
-**Solution**: Bottom-up aggregation:
-- Start with simple, leaf-level operations
-- Build understanding incrementally
-- Collapse calls into semantic steps
-- Scale to arbitrarily complex projects
+**NO LLM at this stage - purely rule-based.**
 
-### Decision 2: Why Clang AST?
+### Atomic Semantic Actions:
 
-**Alternatives Considered**:
-- Tree-sitter (used in V3): Good for syntax, poor for semantics
-- Regex parsing: Unreliable, error-prone
-- LLVM IR: Too low-level, loses C++ constructs
+1. **Validation** - Checking validity of inputs/state
+2. **Permission Check** - Authorization checks
+3. **State Mutation** - Modifying persistent state
+4. **Side Effect** - Irreversible operations
+5. **Early Exit** - Return/throw statements
+6. **Guard Condition** - Control flow decisions
+7. **Error Handling** - Exception handling
+8. **Resource Acquisition/Release** - RAII operations
+9. **Data Transformation** - Data processing
 
-**Why Clang**:
-- Industry-standard C++ parser
-- Complete AST with type information
-- Control-flow graph support
-- Handles all C++ language features
+### Output:
 
-### Decision 3: Why LLM for Aggregation Only?
+Each basic block produces a `BlockSemantics` with a list of `SemanticAction` objects:
 
-**Problem**: Using LLM for end-to-end generation leads to:
-- Hallucinated logic
-- Inconsistent output
-- No guarantees of correctness
-
-**Solution**: Restrict LLM to semantic synthesis:
-- Input: Extracted facts (deterministic)
-- Task: Generate natural language summary
-- Output: Human-readable description
-- Fallback: Deterministic synthesis always available
-
----
-
-## Usage Examples
-
-### Example 1: Architecture Overview (HIGH Detail)
-
-```bash
-agent5 flowchart \
-  --project-path ./ceph/src \
-  --entry-function handle_volume_request \
-  --entry-file api/volume.cpp \
-  --detail-level high \
-  --output volume_architecture.mmd
+```json
+{
+  "type": "validation",
+  "effect": "reject request if volume_id is invalid",
+  "controlImpact": true,
+  "stateImpact": false,
+  "location": "volume.cpp:42",
+  "metadata": {"condition": "!IsValidVolumeId(volume_id)"}
+}
 ```
 
-**Output** (3-5 nodes):
-```
-Start → Handle Volume Request → End
-```
+### Key Classes:
 
-### Example 2: Documentation (MEDIUM Detail)
+- `SemanticAction`: Atomic semantic action
+- `BlockSemantics`: Semantics for a basic block
+- `LeafSemanticExtractor`: Rule-based extractor
 
-```bash
-agent5 flowchart \
-  --project-path ./ceph/src \
-  --entry-function handle_volume_request \
-  --entry-file api/volume.cpp \
-  --detail-level medium \
-  --output volume_docs.mmd
-```
-
-**Output** (8-15 nodes):
-```
-Start → Validate Volume ID → [Valid?]
-  YES → Check Permissions → [Authorized?]
-    YES → Process Request → Update State → End
-    NO → Reject Request → End
-  NO → Return Error → End
-```
-
-### Example 3: Detailed Analysis (DEEP Detail)
-
-```bash
-agent5 flowchart \
-  --project-path ./ceph/src \
-  --entry-function handle_volume_request \
-  --entry-file api/volume.cpp \
-  --detail-level deep \
-  --output volume_detailed.mmd
-```
-
-**Output** (15-30 nodes):
-- All validations expanded
-- State changes shown
-- Critical sub-operations included
-- Error paths detailed
-
----
-
-## Technical Deep Dive
-
-### Call Graph Traversal
-
-**Reverse Topological Sort**:
+### Example:
 
 ```python
-def compute_call_order(entry_function):
-    visited = set()
-    order = []
-    
-    def dfs(func):
-        if func in visited:
-            return
-        visited.add(func)
-        
-        # Visit callees first
-        for callee in call_graph[func]:
-            dfs(callee)
-        
-        # Add this function after its callees
-        order.append(func)
-    
-    dfs(entry_function)
-    return order
-```
+from agent5.leaf_semantic_extractor import extract_leaf_semantics
 
-**Example**:
-```
-Entry → A → B → C (leaf)
-     → D → E (leaf)
+leaf_semantics = extract_leaf_semantics(project_ast)
 
-Order: [C, B, A, E, D, Entry]
-```
-
-### Semantic Action Classification
-
-**Rule-Based Classifier**:
-
-```python
-def classify_guard_condition(condition_text):
-    if "nullptr" in text or "null" in text:
-        return SemanticActionType.VALIDATION, "Validate not null"
-    
-    if "permission" in text or "auth" in text:
-        return SemanticActionType.PERMISSION_CHECK, "Check authorization"
-    
-    if "error" in text or "fail" in text:
-        return SemanticActionType.EARLY_EXIT, "Handle error"
-    
-    return SemanticActionType.VALIDATION, "Validate condition"
-```
-
-### SFM Validation
-
-**Structural Requirements**:
-
-```python
-def validate_sfm(sfm):
-    # Rule 1: Exactly 1 start node
-    starts = [n for n in sfm.nodes if n.id == "start"]
-    assert len(starts) == 1, "Must have exactly 1 start node"
-    
-    # Rule 2: At least 1 end node
-    ends = [n for n in sfm.nodes if n.id == "end"]
-    assert len(ends) >= 1, "Must have at least 1 end node"
-    
-    # Rule 3: All edges reference valid nodes
-    node_ids = {n.id for n in sfm.nodes}
-    for edge in sfm.edges:
-        assert edge.src in node_ids, f"Invalid source: {edge.src}"
-        assert edge.dst in node_ids, f"Invalid destination: {edge.dst}"
-    
-    # Rule 4: No orphaned nodes (except start/end)
-    has_incoming = {e.dst for e in sfm.edges}
-    has_outgoing = {e.src for e in sfm.edges}
-    for node in sfm.nodes:
-        if node.id not in {"start", "end"}:
-            assert (node.id in has_incoming or node.id in has_outgoing), \
-                f"Orphaned node: {node.id}"
+for func_name, block_semantics in leaf_semantics.items():
+    print(f"{func_name}: {len(block_semantics)} blocks")
 ```
 
 ---
 
-## Conclusion
+## Stage 3: Bottom-Up Backtracking & Aggregation
 
-Version 4 represents a fundamental architectural shift in how Agent5 understands and visualizes C++ projects. By adopting DocAgent's bottom-up understanding strategy while maintaining scenario-based presentation, Agent5 V4 delivers:
+**Module:** `bottom_up_aggregator.py`
 
-- ✅ **Scalability**: Handle projects with 1000+ functions
-- ✅ **Accuracy**: Deterministic extraction, no hallucinations
-- ✅ **Clarity**: Clean scenario diagrams, not function-call graphs
-- ✅ **Documentation Quality**: Three detail levels for different use cases
+**Purpose:** Build semantic understanding from leaf functions upward using LLM-assisted summarization.
 
-The pipeline is production-ready for beta testing and feedback.
+**LLM INVOLVED - but strictly based on AST facts.**
 
+### Process:
 
-## Overview
+1. **Start from leaf functions** (functions that don't call other project functions)
+2. **Generate local semantic summaries** using LLM:
+   - Input: Extracted semantic actions (from Stage 2)
+   - Output: `FunctionSummary` with purpose, preconditions, control flow, state changes
+3. **Move upward in call graph**:
+   - Combine child function summaries
+   - Elide non-critical operations (logging, metrics, trivial helpers)
+   - Preserve control-flow and state semantics
+4. **Continue backtracking** until reaching the entry function
 
-Version 4 introduces a production-ready, bottom-up semantic aggregation pipeline inspired by DocAgent's docstring synthesis approach. This architecture enables accurate, deep, documentation-quality flowcharts for complex C++ projects.
+### Rules:
 
-## Core Principle
+- ❌ Function calls are **summarized**, not expanded
+- ❌ Aggregation is **semantic**, not structural
+- ❌ No new logic introduced by LLM
+- ✅ LLM uses ONLY provided AST facts
 
-**Build meaning from leaf nodes upward, never expand downward.**
+### Output:
 
-Traditional approaches start from entry points and recursively expand function calls, leading to overwhelming, function-call-based diagrams. V4 reverses this:
+A `FunctionSummary` for the entry function:
 
-1. Parse the entire codebase (Clang AST + CFG)
-2. Extract semantic meaning at leaf functions (no deeper dependencies)
-3. Aggregate bottom-up: child summaries inform parent summaries
-4. Construct a Scenario Flow Model (SFM) from aggregated semantics
-5. Filter by detail level (high/medium/deep)
-6. Translate SFM to Mermaid (strict translator, no inference)
+```json
+{
+  "functionName": "CreateVolume",
+  "purpose": "Create a new volume with specified configuration",
+  "preconditions": [
+    "volume_id must be valid",
+    "user must have create_volume permission",
+    "storage pool must have sufficient capacity"
+  ],
+  "postconditions": [
+    "volume is registered in volume table",
+    "storage is allocated",
+    "audit log is updated"
+  ],
+  "controlFlow": [
+    "Check if volume already exists",
+    "Validate storage pool availability",
+    "Choose allocation strategy based on volume type"
+  ],
+  "stateChanges": [
+    "Insert volume metadata into database",
+    "Allocate storage blocks",
+    "Update pool capacity"
+  ],
+  "errorConditions": [
+    "Throw VolumeAlreadyExistsException if duplicate",
+    "Throw InsufficientCapacityException if pool full",
+    "Throw PermissionDeniedException if unauthorized"
+  ],
+  "dependencies": ["ValidateVolumeId", "CheckPermission", "AllocateStorage"]
+}
+```
 
-## Six-Stage Pipeline
+### Key Classes:
 
-### Stage 1: Full AST Construction (NO LLM)
-**Module:** `clang_parser.py`
+- `FunctionSummary`: Semantic summary of a function
+- `BottomUpAggregator`: Orchestrates the aggregation process
 
-- Parse entire C++ project using Clang Python bindings
-- Build Abstract Syntax Tree (AST) for all translation units
-- Extract Control-Flow Graphs (CFG) per function
-- Build call graph (forward and reverse)
-- Identify leaf functions (functions with no internal project calls)
-- Detect guard conditions, state mutations, error exits
+### LLM Prompts:
 
-**Output:** `ASTContext` with complete project structure
+#### Leaf Function Prompt:
+Instructs LLM to summarize based ONLY on extracted actions.
 
-**NO LLM** - Pure deterministic parsing
+#### Aggregation Prompt:
+Instructs LLM to combine child summaries and elide non-critical operations.
 
----
+### Example:
 
-### Stage 2: Leaf-Level Semantic Extraction (BOTTOM LEVEL)
-**Module:** `semantic_extractor.py`
-
-At the deepest AST/CFG level, classify each atomic execution unit:
-
-- **Validation:** Input checks, nullptr checks, bounds validation
-- **Permission Check:** Authorization, capability verification
-- **State Mutation:** Persistent state changes
-- **Side Effect:** Irreversible operations (I/O, network)
-- **Early Exit:** Error returns, exceptions
-- **Decision:** Control flow branches
-- **Business Logic:** Core operations
-- **Utility:** Logging, metrics (filtered out)
-
-Each unit produces a `SemanticAction`:
 ```python
-SemanticAction(
-    type=SemanticType.VALIDATION,
-    effect="Validate that volume_id is valid",
-    control_impact=True,
-    state_impact=False,
-    code_ref="if (volume_id == nullptr)",
-    line=42,
+from agent5.bottom_up_aggregator import aggregate_semantics
+
+summary = aggregate_semantics(
+    project_ast=project_ast,
+    leaf_semantics=leaf_semantics,
+    entry_function="CreateVolume",
+    llm_model="qwen2.5-coder:7b"
 )
+
+print(summary.purpose)
+print(f"Preconditions: {len(summary.preconditions)}")
 ```
-
-**Output:** List of `SemanticAction` per function
-
-**NO LLM** - Rule-based classification only
 
 ---
 
-### Stage 3: Bottom-Up Backtracking & Semantic Aggregation (LLM-ASSISTED)
-**Module:** `aggregation_engine.py`
+## Stage 4: Scenario Flow Model Construction
 
-Start from leaf functions and work upward:
-
-1. **Leaf functions:** Generate local semantic summaries from their `SemanticAction` list
-2. **Parent functions:** Combine:
-   - Their own `SemanticAction` list
-   - Child function summaries (from callees)
-3. **Elide non-critical operations** (logging, metrics, trivial wrappers)
-4. **Preserve control-flow and state semantics**
-
-**CRITICAL RULES:**
-- Function calls are **summarized**, NOT expanded
-- Aggregation is **semantic**, NOT structural
-- LLM is used ONLY for semantic interpretation, NOT logic invention
-- Fallback to rule-based summarization if LLM fails
-
-**Output:** `SemanticSummary` per function
-```python
-SemanticSummary(
-    function_name="create_volume",
-    summary="Creates a new volume with validation and state persistence",
-    preconditions=["Validate volume_id", "Check user permissions"],
-    postconditions=["Volume created in database"],
-    side_effects=["Write to disk"],
-    control_flow=["Decision: volume exists?"],
-    error_paths=["Return nullptr if invalid"],
-    child_summaries={"validate_id": "Checks ID validity", ...},
-)
-```
-
-**LLM OPTIONAL** - Has deterministic fallback
-
----
-
-### Stage 4: Scenario Flow Model Construction (SINGLE SOURCE OF TRUTH)
 **Module:** `sfm_builder.py`
 
-Convert aggregated `SemanticSummary` into a **Scenario Flow Model (SFM):**
+**Purpose:** Convert aggregated semantic summaries into a deterministic Scenario Flow Model (SFM).
 
-```python
-ScenarioFlowModel(
-    entry_function="create_volume",
-    steps=[
-        SFMStep(
-            id="step_0",
-            type=StepType.START,
-            label="Start: create_volume",
-            detail_levels=[HIGH, MEDIUM, DEEP],
-        ),
-        SFMStep(
-            id="step_1",
-            type=StepType.VALIDATION,
-            label="Validate volume_id",
-            detail_levels=[MEDIUM, DEEP],
-        ),
-        ...
-    ],
-    detail_level=DetailLevel.MEDIUM,
-)
+**NO LLM - deterministic conversion.**
+
+### Scenario Flow Model (SFM):
+
+The SFM is a **directed graph** representing the scenario flow with explicit detail-level annotations.
+
+**SFM is the SINGLE SOURCE OF TRUTH for flowchart generation.**
+
+### Node Types:
+
+1. **Terminator** - Start/End nodes
+2. **Process** - Action/operation
+3. **Decision** - Conditional branch
+4. **IO** - Input/output operation
+
+### Detail Levels:
+
+Each node and edge is tagged with the detail levels in which it should appear:
+
+- **HIGH**: Business-level steps only
+- **MEDIUM**: All decisions + validations + state changes (default)
+- **DEEP**: Expanded critical sub-operations
+
+### Structure:
+
+```json
+{
+  "entryFunction": "CreateVolume",
+  "nodes": {
+    "node1": {
+      "id": "node1",
+      "type": "terminator",
+      "label": "Start",
+      "detailLevels": ["high", "medium", "deep"]
+    },
+    "node2": {
+      "id": "node2",
+      "type": "decision",
+      "label": "Validate: volume_id is valid",
+      "detailLevels": ["medium", "deep"]
+    },
+    "node3": {
+      "id": "node3",
+      "type": "process",
+      "label": "Create a new volume",
+      "detailLevels": ["high", "medium", "deep"]
+    }
+  },
+  "edges": [
+    {
+      "from": "node1",
+      "to": "node2",
+      "detailLevels": ["medium", "deep"]
+    },
+    {
+      "from": "node2",
+      "to": "node3",
+      "label": "Valid",
+      "detailLevels": ["medium", "deep"]
+    }
+  ],
+  "startNode": "node1",
+  "endNodes": ["nodeN"]
+}
 ```
 
-**Validation:**
-- Exactly one START node
-- At least one END node
-- All decision branches terminate or rejoin
-- All non-END nodes have next steps
+### Validation:
 
-**FAIL-FAST:** If validation fails, **refuse to proceed**.
+Before proceeding, the SFM is validated:
+- Exactly 1 start node
+- At least 1 end node
+- All edges reference valid nodes
+- All nodes have at least one detail level
 
-**NO LLM** - Deterministic rule-based construction
+**If validation fails, the pipeline MUST NOT proceed.**
+
+### Key Classes:
+
+- `ScenarioFlowModel`: The SFM graph
+- `SFMNode`: A node in the graph
+- `SFMEdge`: An edge in the graph
+- `SFMBuilder`: Converts `FunctionSummary` → `SFM`
+
+### Example:
+
+```python
+from agent5.sfm_builder import build_scenario_flow_model
+
+sfm = build_scenario_flow_model(summary)
+
+is_valid, errors = sfm.validate()
+if not is_valid:
+    raise ValueError(f"Invalid SFM: {errors}")
+```
 
 ---
 
-### Stage 5: Detail-Level Filtering (RULE-BASED)
-**Module:** `sfm_builder.py`
+## Stage 5: Detail-Level Filtering
 
-CLI parameter: `--detail-level {high|medium|deep}`
+**Module:** `sfm_builder.py` (method: `filter_by_detail_level`)
 
-Filtering happens **during SFM construction**:
+**Purpose:** Filter the SFM to include only nodes/edges for the specified detail level.
 
-#### `high` (Business-Level Only)
-- **Include:** Only `BUSINESS_LOGIC` steps
-- **Exclude:** All validations, decisions, state changes
-- **Use case:** Architecture overview, executive summary
+**NO LLM - deterministic filtering.**
 
-#### `medium` (Default - Documentation Quality)
-- **Include:** 
-  - Business logic
+### Detail Level Rules:
+
+#### HIGH (Business Overview)
+- **Include:**
+  - Major business operations
+  - High-level purpose
+- **Exclude:**
   - Validations
-  - Decisions
-  - State changes
-  - Permission checks
-- **Exclude:** Internal sub-operations, utilities
-- **Use case:** Technical documentation, code reviews
+  - Internal decisions
+  - State change details
+  - Sub-operations
 
-#### `deep` (Expanded Critical Operations)
-- **Include:** Everything in medium +
-  - Critical sub-operations affecting control flow
-  - Side effects (I/O, network)
-  - Error handling details
-- **Exclude:** Still filter out:
-  - Logging, metrics
+**Use Case:** Architecture documentation, executive overviews
+
+#### MEDIUM (Default Documentation)
+- **Include:**
+  - All validations
+  - All decision points
+  - All state-changing operations
+- **Exclude:**
+  - Internal sub-operations
+  - Called function expansions (show as single step)
+- **DO NOT expand:**
+  - Logging, metrics, debugging
+  - Utility helpers
   - Memory allocation wrappers
+
+**Use Case:** Developer documentation, code reviews
+
+#### DEEP (Implementation Details)
+- **Include:**
+  - Everything in MEDIUM
+  - Critical sub-operations that:
+    - Change control flow
+    - Modify persistent state
+    - Enforce constraints
+  - Internal validation steps
+  - Function call expansions (as single semantic steps)
+- **Exclude:**
+  - Logging, metrics, debugging
+  - Trivial wrappers
   - Serialization helpers
-  - Trivial utilities
-- **Use case:** Debugging, performance analysis, security audits
 
-**CRITICAL:** Detail level **changes the structure**, not just labels.
+**Use Case:** Deep-dive analysis, debugging, refactoring
 
-**NO LLM** - Strict rule-based filtering
+### Example:
+
+```python
+# Filter for HIGH level
+high_sfm = sfm.filter_by_detail_level(DetailLevel.HIGH)
+
+# Filter for DEEP level
+deep_sfm = sfm.filter_by_detail_level(DetailLevel.DEEP)
+```
 
 ---
 
-### Stage 6: Mermaid Translation (LLM STRICT TRANSLATOR)
+## Stage 6: Mermaid Translation
+
 **Module:** `mermaid_translator.py`
 
-**Input:** Scenario Flow Model (SFM)
+**Purpose:** Translate SFM to Mermaid flowchart syntax.
 
-**Output:** Mermaid flowchart syntax
+**LLM AS STRICT TRANSLATOR ONLY - no logic changes.**
 
-**CRITICAL RULES:**
-- **NO logic changes**
-- **NO depth changes**
-- **NO inference**
-- LLM used ONLY for label formatting (optional)
-- Deterministic rule-based translation is primary
+### Rules:
+
+- ❌ NO logic changes
+- ❌ NO depth changes
+- ❌ NO inference
+- ✅ Input: Filtered SFM
+- ✅ Output: Mermaid syntax ONLY
+
+### Translation Modes:
+
+1. **LLM Translation** (default): Use LLM for natural phrasing
+2. **Deterministic Translation** (fallback): Direct SFM → Mermaid mapping
+
+### LLM Prompt:
+
+Instructs LLM to:
+- Use appropriate Mermaid node shapes
+- Keep labels concise
+- Match SFM structure exactly
+- Return ONLY Mermaid code
+
+### Example Output:
 
 ```mermaid
-flowchart TD
-    step_0([Start: create_volume])
-    step_1{{Validate volume_id}}
-    step_2[Create volume in database]
-    step_3([End])
+graph TD
+    node1([Start])
+    node2{Validate: volume_id is valid}
+    node3[Create a new volume]
+    node4([End])
     
-    step_0 --> step_1
-    step_1 -->|Valid| step_2
-    step_1 -->|Invalid| step_3
-    step_2 --> step_3
+    node1 --> node2
+    node2 -->|Valid| node3
+    node2 -->|Invalid| nodeErr([Reject Request])
+    node3 --> node4
 ```
 
-**NO LLM (or LLM as optional label formatter only)**
+### Key Classes:
+
+- `MermaidTranslator`: Translates SFM to Mermaid
+
+### Example:
+
+```python
+from agent5.mermaid_translator import translate_to_mermaid
+
+mermaid_code = translate_to_mermaid(
+    sfm=filtered_sfm,
+    llm_model="qwen2.5-coder:7b",
+    use_llm=True
+)
+```
 
 ---
 
-## Entry-Point Disambiguation
+## Complete Pipeline Orchestration
 
-### CLI Parameters
-- `--file <path>`: Entry file (for locating entry function)
-- `--function <name>`: Entry function name (required)
-- `--project-path <path>`: Project root (defines analysis scope)
+**Module:** `docagent_pipeline.py`
 
-### Resolution Rules
-1. **Both `--file` and `--function` provided:**
-   - Strict resolution: find function in that file
-   - Error if not found or ambiguous
-2. **Only `--function` provided:**
-   - Search entire project
-   - Error if multiple matches found (ambiguous)
-   - Succeed if exactly one match
-3. **Auto-detect (neither provided):**
-   - Use AST evidence to find likely entry points (`main`, public APIs)
+**Purpose:** Orchestrate all 6 stages into a cohesive pipeline.
 
-**CRITICAL:** `--file` is for **disambiguation only**, NOT for limiting scope!
+### Example Usage:
 
----
+```python
+from pathlib import Path
+from agent5.docagent_pipeline import generate_flowchart
 
-## Scenario Boundary Rules
+mermaid_code = generate_flowchart(
+    project_path=Path("/path/to/cpp/project"),
+    entry_function="CreateVolume",
+    entry_file=Path("/path/to/cpp/project/volume.cpp"),  # Optional
+    detail_level="medium",
+    llm_model="qwen2.5-coder:7b",
+    use_llm_translation=True
+)
 
-### Always Include
-- Argument parsing
-- Validation
-- Business decisions
-- State changes
-- Success/failure exits
-- Error handling
+print(mermaid_code)
+```
 
-### Never Include (Always Filter)
-- Logging
-- Metrics
-- Telemetry
-- Debug prints
-- Trivial utility helpers
-- Memory allocation wrappers
-- Serialization helpers
-
----
-
-## Fail-Fast Principle
-
-The agent **refuses to proceed** if:
-
-1. Entry function cannot be resolved (ambiguous or not found)
-2. Scenario Flow Model validation fails:
-   - No START node
-   - No END node
-   - Decision branches don't terminate
-3. libclang not available (Stage 1)
-
-**NO guessing. NO "best effort". Fail fast with clear error.**
-
----
-
-## Debug Mode
-
-CLI: `--debug`
-
-Exports intermediate artifacts:
-- `debug_ast_context.json`: Full AST + CFG
-- `debug_semantic_summaries.json`: Aggregated semantics
-- `debug_sfm.json`: Scenario Flow Model
-
-Use for:
-- Troubleshooting incorrect flowcharts
-- Understanding what the agent "sees"
-- Validating semantic extraction
-
----
-
-## Comparison: V3 vs V4
-
-| Feature | V3 (Tree-sitter) | V4 (DocAgent-Inspired) |
-|---------|------------------|------------------------|
-| **Parser** | tree-sitter | Clang AST |
-| **CFG** | No | Yes |
-| **Semantic Extraction** | Manual rules | Leaf-level classification |
-| **Aggregation** | Top-down | Bottom-up |
-| **Understanding** | Entry-point only | Project-wide |
-| **Detail Control** | Basic filtering | Structural detail levels |
-| **LLM Role** | Scenario + Mermaid | Semantic summarization only |
-| **Fail-Fast** | Partial | Strict |
-| **Debug Artifacts** | No | Yes |
-| **Production Ready** | No | Yes |
-
----
-
-## Example Workflow
+### CLI Usage:
 
 ```bash
-# V4 Pipeline with medium detail (default)
+# V4 Pipeline with high-level detail
 python -m agent5 flowchart \
-  --use-v4-pipeline \
-  --file src/volume.cpp \
-  --function create_volume \
-  --project-path /path/to/cinder \
-  --detail-level medium \
-  --out flowcharts/create_volume_medium.mmd
+    --use_v4 \
+    --file /path/to/project/volume.cpp \
+    --function CreateVolume \
+    --project-path /path/to/project \
+    --detail-level high \
+    --out volume_flow.mmd
 
-# V4 with LLM-assisted semantic aggregation
+# V4 Pipeline with deep detail and debug mode
 python -m agent5 flowchart \
-  --use-v4-pipeline \
-  --file src/volume.cpp \
-  --function create_volume \
-  --project-path /path/to/cinder \
-  --detail-level deep \
-  --use_llm \
-  --debug \
-  --out flowcharts/create_volume_deep.mmd
-
-# V4 with custom include paths (for complex projects)
-python -m agent5 flowchart \
-  --use-v4-pipeline \
-  --file src/volume.cpp \
-  --function create_volume \
-  --project-path /path/to/cinder \
-  --include-paths "/usr/include/boost,/opt/openstack/include" \
-  --detail-level high \
-  --out flowcharts/create_volume_high.mmd
+    --use_v4 \
+    --file /path/to/project/volume.cpp \
+    --function CreateVolume \
+    --project-path /path/to/project \
+    --detail-level deep \
+    --debug \
+    --include_paths "/usr/include,/opt/include" \
+    --out volume_deep.mmd
 ```
 
 ---
 
-## Technical Guarantees
+## Key Differences from V3
 
-1. **Determinism:** Without LLM, identical input → identical output
-2. **Validation:** SFM always validated before Mermaid generation
-3. **Fail-Fast:** Clear errors instead of incorrect outputs
-4. **Traceability:** Every SFM step maps to specific AST facts
-5. **Scalability:** Handles projects with 100K+ LOC
-6. **Detail Control:** Detail level structurally changes output
-
----
-
-## Limitations & Future Work
-
-### Current Limitations
-1. **C++ Only:** Clang AST parser is C/C++ specific
-2. **No Inter-Procedural Analysis:** Function pointers/virtual calls treated as opaque
-3. **No Data Flow Analysis:** Tracks control flow, not data flow
-4. **Template Instantiation:** May struggle with complex template metaprogramming
-
-### Future Enhancements
-1. **Multi-Language:** Add support for Rust, Go, Java
-2. **Data Flow:** Track variable mutations across functions
-3. **Concurrency:** Analyze thread synchronization and race conditions
-4. **Performance:** Incremental parsing for large codebases
+| Aspect | V3 (Tree-sitter) | V4 (DocAgent-inspired) |
+|--------|------------------|------------------------|
+| **Parsing** | Tree-sitter | Clang AST + CFG |
+| **Understanding** | Top-down | Bottom-up |
+| **Semantic Extraction** | Limited | Comprehensive (9 action types) |
+| **LLM Usage** | Throughout pipeline | Stages 3 & 6 only |
+| **Function Calls** | Expanded into diagram | Summarized semantically |
+| **Accuracy** | Moderate | High (AST-grounded) |
+| **Scalability** | Limited (single-file focus) | Project-wide |
+| **Detail Control** | Post-hoc filtering | Built into SFM from Stage 4 |
 
 ---
 
-## Conclusion
+## Critical Constraints
 
-V4 represents a fundamental shift from **expanding** (top-down) to **aggregating** (bottom-up). This approach:
+### ❌ Never Generate Function-Call Diagrams
 
-- Produces **scenario-based** flowcharts, never function-call diagrams
-- Scales to **large, real-world** C++ projects
-- Provides **structural detail control** (high/medium/deep)
-- Uses LLM **only where needed** (semantic interpretation)
-- **Fails fast** instead of producing garbage
+Function calls are **summarized as semantic actions**, not expanded into call graphs.
 
-**Result:** Production-ready, documentation-quality flowcharts suitable for technical documentation, code reviews, and onboarding.
+### ❌ Never Let LLM Infer Logic
 
+LLM operates ONLY on extracted AST facts. No guessing.
+
+### ❌ Never Expand Noise Operations
+
+Logging, metrics, utility helpers are **always elided**.
+
+### ✅ Always Bottom-Up Understanding
+
+Leaf functions → Entry function.
+
+### ✅ Always Scenario-Based Visualization
+
+Diagrams show scenario flow, not implementation.
+
+### ✅ Always Validate SFM
+
+If SFM is invalid, **FAIL FAST**. Do not proceed to Mermaid generation.
+
+---
+
+## Dependencies
+
+```
+libclang==18.1.1      # Clang AST parsing
+langchain-ollama      # LLM integration
+langchain-core        # LLM prompts
+```
+
+---
+
+## Future Enhancements
+
+1. **Inter-procedural CFG**: Inline critical functions into CFG
+2. **Symbolic Execution**: Track state changes more precisely
+3. **Code Clone Detection**: Identify redundant validation/error handling
+4. **Multi-entry Scenarios**: Support scenarios spanning multiple entry points
+5. **Incremental Analysis**: Cache AST/semantics for faster re-runs
+
+---
+
+## References
+
+- **DocAgent**: [https://github.com/facebookresearch/DocAgent](https://github.com/facebookresearch/DocAgent)
+- **Clang AST**: [https://clang.llvm.org/docs/IntroductionToTheClangAST.html](https://clang.llvm.org/docs/IntroductionToTheClangAST.html)
+- **Control Flow Graphs**: [https://en.wikipedia.org/wiki/Control-flow_graph](https://en.wikipedia.org/wiki/Control-flow_graph)
+
+---
+
+## Questions & Support
+
+For issues or questions about the V4 pipeline, please refer to:
+- `QUICKSTART.md` for basic usage
+- `README.md` for installation and configuration
+- `FLOWCHART_GENERATION_FLOW.md` for internal execution flow
+
+---
+
+**Version 4 is a complete reimagining of C++ flowchart generation.**
+
+**Understanding flows bottom-up. Visualization remains scenario-based.**
+
+This is the way.

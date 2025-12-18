@@ -1,538 +1,331 @@
-# Changelog - Version 4.0
+# Changelog - Version 4
 
-## Version 4.0 - DocAgent-Inspired Bottom-Up Understanding (December 2025)
+## Agent5 V4: DocAgent-Inspired Bottom-Up Semantic Aggregation
 
-### 🚀 Major Architectural Change
-
-Version 4 introduces a **revolutionary 6-stage pipeline** that builds semantic understanding from the bottom up, inspired by Meta's DocAgent approach. This is the most significant architectural change since Agent5's inception.
+**Release Date**: December 18, 2025
 
 ---
 
-## New Features
+### 🎉 Major Changes
 
-### 1. Bottom-Up Understanding Strategy
+This version represents a **complete architectural redesign** of Agent5, implementing a DocAgent-inspired bottom-up semantic aggregation pipeline for generating documentation-quality flowcharts from complex C++ projects.
 
-**What Changed**: 
-- V3: Top-down analysis starting from entry function
-- V4: Bottom-up analysis starting from leaf functions
+---
 
-**Why It Matters**:
-- More accurate semantic understanding
-- Better abstraction at higher levels
-- Explicit handling of function relationships
+### 🏗️ New Architecture: 6-Stage Pipeline
 
-**How It Works**:
-```
-Leaf Functions (no calls to other functions)
-    ↓
-Generate semantic summaries using LLM
-    ↓
-Move upward in call graph
-    ↓
-Aggregate child summaries into parent summaries
-    ↓
-Continue until entry function
-    ↓
-Complete scenario understanding
-```
+#### Stage 1: Full AST Construction (Clang)
+- **New Module**: `agent5/clang_ast_parser.py`
+- Replaces tree-sitter with libclang for accurate C++ parsing
+- Builds full Abstract Syntax Tree (AST) for all translation units
+- Extracts call graph and identifies leaf functions
+- Supports project-wide analysis
+- **Key Classes**:
+  - `ClangASTParser`: Main AST parser
+  - `CallGraph`: Project call graph representation
+  - `FunctionInfo`: Detailed function metadata
 
-### 2. Clang AST + Control Flow Graph Analysis
+#### Stage 1b: Control Flow Graph Construction
+- **New Module**: `agent5/cfg_builder.py`
+- Builds Control Flow Graphs (CFG) for each function
+- Identifies basic blocks, guard conditions, state mutations, error exits
+- Analyzes semantic properties at block level
+- **Key Classes**:
+  - `CFGBuilder`: CFG construction engine
+  - `ControlFlowGraph`: CFG representation
+  - `BasicBlock`: Basic block with semantic properties
 
-**New Components**:
-- `agent5/clang_ast_parser.py`: Full AST construction using Clang
-- CFG (Control Flow Graph) per function
-- Explicit call graph construction
-- Basic block analysis
+#### Stage 2: Leaf-Level Semantic Extraction
+- **New Module**: `agent5/semantic_extractor.py`
+- Extracts atomic semantic actions from CFG blocks
+- Identifies: validations, permission checks, state mutations, side effects, early exits
+- **NO LLM inference** - purely deterministic
+- **Key Classes**:
+  - `SemanticExtractor`: Semantic extraction engine
+  - `SemanticAction`: Atomic semantic action
+  - `FunctionSemantics`: Function-level semantic description
 
-**Capabilities**:
-- Identify guard conditions
-- Detect state mutations
-- Find error exits
-- Track control flow branches
+#### Stage 3: Bottom-Up Semantic Aggregation
+- **New Module**: `agent5/aggregator.py`
+- Implements DocAgent-inspired bottom-up backtracking
+- Starts from leaf functions, aggregates upward
+- Uses LLM for semantic summarization (strictly fact-based)
+- Combines child summaries while preserving control flow and state semantics
+- **Key Classes**:
+  - `BottomUpAggregator`: Aggregation engine
+  - `AggregatedSemantics`: Aggregated semantic understanding
 
-**Fallback**: Regex-based parsing when Clang is unavailable
+#### Stage 4: Scenario Flow Model Construction
+- **New Module**: `agent5/sfm_builder.py`
+- Converts aggregated semantics into Scenario Flow Model (SFM)
+- SFM is the **single source of truth** for flowchart generation
+- Explicit mapping to detail levels
+- JSON-based representation
+- **Key Classes**:
+  - `SFMBuilder`: SFM construction engine
+  - `ScenarioFlowModel`: SFM representation
+  - `SFMNode`, `SFMEdge`: SFM components
 
-### 3. Leaf-Level Semantic Extraction
+#### Stage 5: Detail-Level Filtering
+- **New Module**: `agent5/detail_filter.py`
+- Rule-based filtering of SFM by detail level
+- Supports `high`, `medium`, `deep` detail levels
+- Never expands utility operations (logging, metrics, etc.)
+- Reconnects edges when intermediate nodes are filtered
+- **Key Classes**:
+  - `DetailLevelFilter`: Filtering engine
+  - `DetailLevel`: Enum for detail levels
 
-**New Component**: `agent5/semantic_extractor.py`
+#### Stage 6: Mermaid Translation
+- **New Module**: `agent5/flowchart_v4.py`
+- LLM as **strict translator** from SFM to Mermaid
+- No logic changes, no depth changes, no inference
+- Deterministic fallback if LLM fails
+- Validates SFM before translation
+- **Key Classes**:
+  - `MermaidTranslator`: Translation engine
 
-**Semantic Action Types**:
-1. Validation
-2. Permission Check
-3. State Mutation
-4. Irreversible Side Effect
-5. Early Exit
-6. Computation
-7. Logging *(excluded)*
-8. Metrics *(excluded)*
-9. Utility *(excluded)*
+---
 
-**Rule-Based Classification**:
-- Uses keyword matching
-- Analyzes basic block properties
-- NO LLM inference at this stage
-- Purely deterministic
+### 🔧 Pipeline Orchestration
 
-### 4. LLM-Assisted Semantic Aggregation
+- **New Module**: `agent5/pipeline.py`
+- Orchestrates all 6 stages
+- Handles entry-point resolution
+- Saves intermediate artifacts in debug mode
+- **Key Classes**:
+  - `FlowchartPipeline`: Main pipeline orchestrator
 
-**New Component**: `agent5/aggregation_engine.py`
+---
 
-**Process**:
-1. Start from leaf functions
-2. Generate local semantic summaries using LLM
-3. Move upward in call graph
-4. Combine child summaries into parent summaries
-5. Elide non-critical operations
-6. Preserve control-flow and state semantics
+### 🖥️ New CLI: cli_v4.py
 
-**LLM Role**:
-- ✅ Semantic summarization (based on AST facts)
-- ❌ NO logic inference
-- ❌ NO hallucination
-- ✅ Deterministic fallback available
+- **New Module**: `agent5/cli_v4.py`
+- Dedicated CLI for V4 pipeline
+- Simplified, focused interface
+- Clear documentation in help text
 
-**Output**: `SemanticSummary` with:
-- High-level summary
-- Preconditions
-- Postconditions
-- Side effects
-- Control flow
-- Error conditions
-
-### 5. Enhanced Scenario Flow Model (SFM)
-
-**Updated Component**: `agent5/sfm_schema.py`
-
-**New Features**:
-- Detail level mapping per step
-- Richer step metadata
-- Improved validation
-- JSON serialization/deserialization
-
-**Step Types**:
-- START
-- END
-- DECISION
-- ACTION
-- VALIDATION
-- STATE_CHANGE
-- ERROR
-
-**Detail Levels** (now assigned during SFM construction):
-- HIGH: Business-level steps
-- MEDIUM: + Decisions, validations, state changes
-- DEEP: + Critical sub-operations
-
-### 6. Detail-Level Filtering
-
-**New Component**: `agent5/detail_filter.py`
-
-**Improvements**:
-- Filtering happens AFTER aggregation (not during)
-- Explicit re-linking of filtered steps
-- Validation of filtered SFM
-
-**Rules**:
-- HIGH: Only major business steps
-- MEDIUM: All decisions + validations + state changes
-- DEEP: Expanded critical sub-operations
-- NEVER EXPAND: Logging, metrics, utility helpers
-
-### 7. Enhanced Mermaid Translation
-
-**Updated Component**: `agent5/mermaid_translator.py`
-
-**New Features**:
-- LLM-assisted translation with validation
-- Deterministic fallback
-- Structure preservation checks
-- Better node shape selection
-
-**Translation Modes**:
-1. **LLM-Assisted** (better labels, formatting)
-   - Validates structure preservation
-   - Falls back if validation fails
-2. **Deterministic** (always works)
-   - Rule-based translation
-   - Guaranteed valid Mermaid
-
-### 8. Complete V4 Pipeline
-
-**New Component**: `agent5/v4_pipeline.py`
-
-**End-to-End Pipeline**:
-```python
-V4Pipeline(
-    project_path="/path/to/project",
-    llm_handler=llm
-)
-
-mermaid = pipeline.generate_flowchart(
-    entry_function="HandleRequest",
-    entry_file="handler.cpp",
-    detail_level="medium"
-)
-```
-
-**Features**:
-- Caching of AST and semantic extraction
-- Entry point resolution and disambiguation
-- Available functions listing
-- Auto-detection of entry points
-
-### 9. CLI Support for V4
-
-**New Flag**: `--use_v4`
-
-**Usage**:
+**New Command Structure**:
 ```bash
-# Use V4 pipeline
-python -m agent5 flowchart \
-  --file path/to/file.cpp \
-  --function HandleRequest \
+python -m agent5.cli_v4 \
   --project-path /path/to/project \
+  --entry-function FunctionName \
+  --entry-file path/to/file.cpp \
   --detail-level medium \
-  --use_v4 \
-  --out output.mmd
-
-# Use V3 pipeline (default)
-python -m agent5 flowchart \
-  --file path/to/file.cpp \
-  --function HandleRequest \
-  --detail-level medium \
-  --out output.mmd
+  --out flowchart.mmd
 ```
 
-**V3 vs V4**:
-- V3: Faster, simpler, good for quick flowcharts
-- V4: Deeper understanding, better for documentation
+**Key Arguments**:
+- `--project-path` (required): Defines analysis scope (ENTIRE project)
+- `--entry-function`: Entry point function name (auto-detects if omitted)
+- `--entry-file`: For disambiguating entry function (NOT for limiting scope)
+- `--detail-level`: `high`, `medium` (default), or `deep`
+- `--include-paths`: Comma-separated include paths for Clang
+- `--llm-model`: Ollama model to use (default: `llama2:7b`)
+- `--no-llm`: Disable LLM (use deterministic fallbacks)
+- `--debug`: Save intermediate artifacts to `project_path/output/`
 
-### 10. Comprehensive Documentation
+---
 
-**New Files**:
-- `ARCHITECTURE_v4.md`: Complete technical documentation
-  - Pipeline stages
-  - Data structures
-  - Data flow diagrams
-  - Usage examples
-  - Comparison with V3
-  
+### 📦 Dependencies
+
+**New Dependency**:
+- `libclang==18.1.1` - Python bindings for Clang
+
+**Updated**:
+- `tree-sitter` and `tree-sitter-cpp` marked as "legacy support" (retained for backwards compatibility)
+
+---
+
+### 🎯 Detail Levels (Now Fully Functional)
+
+#### HIGH Level
+- **Purpose**: Architecture overview for stakeholders
+- **Includes**: Major business operations only
+- **Excludes**: Implementation details, validations, internal decisions
+
+#### MEDIUM Level (Default)
+- **Purpose**: Documentation-quality flowcharts for developers
+- **Includes**: All validations, decisions, state changes
+- **Excludes**: Internal sub-operations
+
+#### DEEP Level
+- **Purpose**: Implementation details for code review
+- **Includes**: All MEDIUM content + critical sub-operations affecting control/state
+- **Excludes**: Logging, metrics, utility helpers (always excluded)
+
+**Previously**: Detail levels produced nearly identical flowcharts
+**Now**: Detail levels produce structurally distinct flowcharts with meaningful differences
+
+---
+
+### 🔍 Entry-Point Resolution (Clarified)
+
+**Critical Rule**: `--entry-file` ≠ analysis scope
+
+#### Resolution Logic
+
+1. **Both `--entry-function` and `--entry-file` provided**:
+   - Strict resolution
+   - Function must exist in specified file
+   - Analysis scope = entire `--project-path`
+
+2. **Only `--entry-function` provided**:
+   - Search across entire project
+   - Error if ambiguous (multiple matches)
+   - Error if not found
+
+3. **Neither provided**:
+   - Auto-detect using AST evidence:
+     - Functions with no callers
+     - Functions named "main"
+     - First available entry point
+
+**Previously**: `--entry-file` incorrectly limited analysis scope to single file
+**Now**: `--project-path` ALWAYS defines the analysis scope
+
+---
+
+### 🚫 What We Don't Do (Critical Constraints)
+
+1. **No Function-Call Diagrams**
+   - V4 generates **scenario flows**, not call graphs
+   - Function calls are *summarized*, not *expanded*
+
+2. **No Recursive Visual Expansion**
+   - Functions are collapsed into semantic actions
+   - Control flow is preserved, not function boundaries
+
+3. **No LLM Creativity**
+   - LLM is used ONLY for:
+     - Semantic summarization (Stage 3) - strictly fact-based
+     - Mermaid translation (Stage 6) - strict translation only
+   - LLM does NOT invent logic, control flow, or behavior
+
+4. **Scenario Flow Model is Authoritative**
+   - SFM (Stage 4) is the single source of truth
+   - All subsequent stages work from SFM, never bypass it
+
+---
+
+### 🐛 Bug Fixes from V3
+
+1. **Fixed**: Detail levels producing identical flowcharts
+   - Implemented strict, rule-based filtering
+   - Each detail level now produces structurally distinct output
+
+2. **Fixed**: `--entry-file` limiting analysis to single file
+   - Clarified: `--entry-file` is for disambiguation only
+   - Analysis scope is ALWAYS defined by `--project-path`
+
+3. **Fixed**: Function-call diagram generation instead of scenario flows
+   - New pipeline ensures scenario-based flow from the ground up
+   - Function calls are summarized, never expanded
+
+4. **Fixed**: LLM inventing logic not present in code
+   - Stage 2 (Semantic Extraction) is deterministic
+   - Stage 3 (Aggregation) uses LLM strictly for summarization
+   - All logic comes from AST/CFG analysis, not LLM
+
+---
+
+### 📊 Performance Characteristics
+
+- **Stage 1 (AST Construction)**: O(n) where n = lines of code
+- **Stage 2 (Semantic Extraction)**: O(b) where b = number of basic blocks
+- **Stage 3 (Aggregation)**: O(f) where f = number of functions in call path
+  - LLM calls: One per function in bottom-up order
+- **Stage 4-6**: O(1) relative to project size (work on aggregated data)
+
+**Memory Usage**:
+- Full AST is kept in memory for analysis
+- CFGs are built on-demand
+- Intermediate artifacts can be saved to disk (`--debug` mode)
+
+---
+
+### 🧪 Testing Recommendations
+
+1. **Smoke Test**: Run on a simple C++ project with known entry point
+2. **Detail Level Test**: Generate `high`, `medium`, `deep` for same entry point, verify differences
+3. **Ambiguous Entry Test**: Provide ambiguous function name without file, verify error handling
+4. **Cross-File Test**: Use entry point that calls functions across multiple files
+5. **No LLM Test**: Run with `--no-llm` to verify deterministic fallbacks work
+
+---
+
+### 📚 Documentation
+
+**New Documents**:
+- `AGENT5_V4_README.md`: Comprehensive V4 user guide
 - `CHANGELOG_v4.md`: This file
-
-**Updated Files**:
-- `README.md`: Updated with V4 usage
-- CLI help text: Added V4 options
+- `FLOWCHART_GENERATION_FLOW.md`: Internal flow documentation (updated for V4)
 
 ---
 
-## Breaking Changes
+### 🔄 Migration from V3
 
-### None!
+**Breaking Changes**:
+- V3 CLI commands do not work with V4 pipeline
+- Use `agent5.cli_v4` for V4 pipeline
+- V3 is still available via original `agent5.cli`
 
-V4 is **opt-in** via `--use_v4` flag. V3 pipeline remains the default and is fully supported.
-
-**Migration Path**:
-1. Test V4 on a few functions
-2. Compare V3 vs V4 output
-3. Switch to V4 when satisfied
-4. Use `--use_v4` by default
-
----
-
-## Performance
-
-### V4 Performance Characteristics
-
-**Slower than V3**:
-- Reason: LLM-assisted semantic aggregation
-- Trade-off: Speed for accuracy
-
-**Typical Times** (for 100-function project):
-- Stage 1 (AST): 10-30 seconds
-- Stage 2 (Semantic Extraction): 1-5 seconds
-- Stage 3 (Aggregation): 30-120 seconds *(LLM-dependent)*
-- Stage 4-6 (SFM + Filter + Mermaid): 1-5 seconds
-
-**Total**: ~1-3 minutes for medium-sized projects
-
-**Optimization Strategies**:
-1. Use local Ollama for faster LLM calls
-2. Use smaller LLM models (7B parameters)
-3. Cache AST and semantic extraction (future work)
+**Recommended Migration Path**:
+1. Test V4 pipeline with existing entry points
+2. Compare outputs with V3 (V4 should be more accurate)
+3. Migrate workflows to V4 CLI
+4. Update documentation references
 
 ---
 
-## Dependencies
+### 🎓 Learning Resources
 
-### New Dependencies
-```
-clang (optional)
-  - Used for AST parsing
-  - Falls back to regex if unavailable
-  - Install: apt-get install clang (Linux) or brew install llvm (Mac)
-```
-
-### Existing Dependencies (unchanged)
-```
-Python 3.10+
-langchain
-langchain-community
-ollama (Python client)
-chromadb
-tree-sitter-cpp
-rich
-```
+For understanding the approach:
+- [DocAgent (Facebook Research)](https://github.com/facebookresearch/DocAgent) - Bottom-up understanding strategy
+- [Clang AST Introduction](https://clang.llvm.org/docs/IntroductionToTheClangAST.html)
+- [Control Flow Analysis](https://en.wikipedia.org/wiki/Control-flow_graph)
 
 ---
 
-## Technical Improvements
+### 🙏 Acknowledgments
 
-### 1. Deterministic Analysis
-
-**Stage 1 & 2**: NO LLM, purely deterministic
-- Guarantees correctness at foundational level
-- Reproducible across runs
-- Testable and debuggable
-
-### 2. Explicit Call Graph
-
-**Benefits**:
-- Understand function relationships
-- Find all reachable functions
-- Topological sorting for bottom-up processing
-- Identify leaf functions
-
-### 3. Semantic Aggregation
-
-**LLM Used Correctly**:
-- ✅ Semantic summarization (LLM strength)
-- ❌ Logic inference (LLM weakness)
-- ✅ Deterministic fallback (reliability)
-
-### 4. Single Source of Truth
-
-**SFM Remains Authoritative**:
-- V3: SFM is source of truth
-- V4: SFM is STILL source of truth
-- Mermaid is always derived from SFM, never the reverse
-
-### 5. Rigorous Validation
-
-**Multiple Validation Points**:
-- AST parsing (syntax correctness)
-- Semantic extraction (rule compliance)
-- SFM construction (structural validity)
-- Detail filtering (flow preservation)
-- Mermaid translation (structure preservation)
+- DocAgent team (Facebook Research) for the bottom-up understanding approach
+- Clang/LLVM team for libclang
+- Ollama project for open-source LLM infrastructure
 
 ---
 
-## Known Limitations
+### 🔮 Future Enhancements (Potential)
 
-### 1. Clang Dependency
-- **Issue**: Requires Clang for best results
-- **Mitigation**: Regex fallback available
-- **Future**: Improve regex parsing
-
-### 2. LLM Latency
-- **Issue**: Semantic aggregation can be slow
-- **Mitigation**: Use local Ollama, smaller models
-- **Future**: Parallel aggregation, caching
-
-### 3. Single Entry Point
-- **Issue**: Can only analyze one entry point at a time
-- **Future**: Multi-entry-point analysis
-
-### 4. Large Projects
-- **Issue**: Memory usage for very large projects (1000+ files)
-- **Mitigation**: Use `--scope` to limit analysis
-- **Future**: Incremental analysis
+- **Caching**: Cache AST/CFG/semantics between runs
+- **Incremental Analysis**: Only reanalyze changed functions
+- **Multi-Entry Point**: Generate flowcharts for multiple entry points in one pass
+- **Interactive Mode**: Web UI for exploring scenarios
+- **Custom Rules**: User-defined semantic classification rules
+- **Code Generation**: Reverse direction - generate code from SFM
 
 ---
 
-## Examples
+### 📝 Known Limitations
 
-### Example 1: Business Overview (HIGH detail level)
-
-```bash
-python -m agent5 flowchart \
-  --file src/api/volume_handler.cpp \
-  --function HandleVolumeCreate \
-  --project-path /path/to/cinder \
-  --detail-level high \
-  --use_v4 \
-  --out volume_create_overview.mmd
-```
-
-**Output**:
-- START
-- Decision: Is request authorized?
-- Action: Create volume
-- END
-
-**Use Case**: Architecture documentation, presentations
-
-### Example 2: Standard Documentation (MEDIUM detail level)
-
-```bash
-python -m agent5 flowchart \
-  --file src/api/volume_handler.cpp \
-  --function HandleVolumeCreate \
-  --project-path /path/to/cinder \
-  --detail-level medium \
-  --use_v4 \
-  --out volume_create_doc.mmd
-```
-
-**Output**:
-- START
-- Validation: Check request parameters
-- Validation: Check quota
-- Decision: Is request authorized?
-- State Change: Reserve quota
-- Action: Create volume metadata
-- State Change: Allocate storage
-- Action: Notify completion
-- END
-
-**Use Case**: Developer documentation, code reviews
-
-### Example 3: Deep Technical Analysis (DEEP detail level)
-
-```bash
-python -m agent5 flowchart \
-  --file src/api/volume_handler.cpp \
-  --function HandleVolumeCreate \
-  --project-path /path/to/cinder \
-  --detail-level deep \
-  --use_v4 \
-  --out volume_create_detailed.mmd
-```
-
-**Output**:
-- START
-- Validation: Check volume_id not empty
-- Validation: Check size within limits
-- Validation: Check quota available
-- Decision: Is user authorized?
-- State Change: Lock quota table
-- State Change: Update quota record
-- State Change: Unlock quota table
-- Action: Generate volume UUID
-- Action: Create database record
-- State Change: Mark volume as "creating"
-- Action: Call backend allocate_storage()
-- Decision: Allocation succeeded?
-- State Change: Mark volume as "available"
-- Action: Publish volume.create.end event
-- END
-
-**Use Case**: Debugging, deep code analysis, optimization
+1. **C++ Template Complexity**: Heavy template metaprogramming may not be fully captured
+2. **Macro Expansion**: Macros are analyzed post-expansion; original macro logic is lost
+3. **External Libraries**: Functions from external libraries are treated as black boxes
+4. **Inline Assembly**: Inline assembly is not analyzed
+5. **Virtual Calls**: Virtual function calls are analyzed conservatively
 
 ---
 
-## Migration Guide
+### 🤝 Contributing
 
-### From V3 to V4
-
-**Step 1**: Test on a single function
-```bash
-# V3 command
-python -m agent5 flowchart --file handler.cpp --function Process --out v3.mmd
-
-# V4 command (add --use_v4 and --project-path)
-python -m agent5 flowchart --file handler.cpp --function Process --project-path . --use_v4 --out v4.mmd
-
-# Compare outputs
-mermaid-cli -i v3.mmd -o v3.png
-mermaid-cli -i v4.mmd -o v4.png
-```
-
-**Step 2**: Evaluate quality
-- V4 should have better semantic understanding
-- V4 may have different step granularity
-- V4 detail levels should show clear structural differences
-
-**Step 3**: Use V4 for new documentation
-```bash
-# Add alias to .bashrc or .zshrc
-alias agent5-flowchart='python -m agent5 flowchart --use_v4 --detail-level medium'
-
-# Use
-agent5-flowchart --file handler.cpp --function Process --project-path . --out flow.mmd
-```
+Contributions welcome! Focus areas:
+- Improving semantic classification rules
+- Adding support for more C++ patterns
+- Optimizing performance for very large projects
+- Enhancing LLM prompts for better summarization
 
 ---
 
-## Troubleshooting
-
-### Issue: "Clang not found"
-**Solution**: V4 will automatically fall back to regex parsing. For better results, install Clang:
-```bash
-# Linux
-sudo apt-get install clang
-
-# Mac
-brew install llvm
-
-# Verify
-clang --version
-```
-
-### Issue: "LLM aggregation is slow"
-**Solutions**:
-1. Use smaller model: `--chat_model codellama:7b`
-2. Ensure Ollama is running locally
-3. Check Ollama performance: `ollama list`
-
-### Issue: "Entry function not found"
-**Solution**: Provide `--entry-file` to disambiguate:
-```bash
-python -m agent5 flowchart \
-  --file path/to/file.cpp \
-  --function Process \  # Ambiguous
-  --entry-file path/to/file.cpp \  # Disambiguate
-  --use_v4 \
-  --out flow.mmd
-```
-
-### Issue: "Detail levels look similar"
-**Cause**: V4 assigns detail levels during SFM construction, not extraction.
-**Check**: Verify you're using V4 pipeline (`--use_v4` flag).
-
----
-
-## Credits
-
-### Inspiration
-- **DocAgent** (Meta Research): Bottom-up understanding strategy
-- **Clang**: Robust C++ AST parsing
-- **Mermaid**: Beautiful diagram syntax
-
-### Contributors
-- Agent5 Development Team
-
----
-
-## Future Roadmap
-
-### Version 4.1 (Planned)
-- [ ] Parallel semantic aggregation
-- [ ] Caching of AST and semantics
-- [ ] Performance benchmarks
-
-### Version 4.2 (Planned)
-- [ ] Incremental analysis
-- [ ] Multi-entry-point support
-- [ ] Interactive SFM refinement
-
-### Version 5.0 (Vision)
-- [ ] Multi-language support (Python, Java, Rust)
-- [ ] Real-time analysis in IDEs
-- [ ] AI-assisted flowchart refinement
-
----
-
-**Full documentation**: See `ARCHITECTURE_v4.md`  
-**Report issues**: GitHub Issues  
-**Questions**: GitHub Discussions
+**Version**: 4.0.0  
+**Build Date**: December 18, 2025  
+**Codename**: "DocAgent"

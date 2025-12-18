@@ -2,6 +2,16 @@
 
 Agent5 is an advanced AI agent that deeply understands C++ projects through **AST-aware analysis** and generates **accurate scenario-based flowcharts**. It addresses the limitations of previous approaches by implementing deterministic, rule-based scenario extraction before any LLM involvement.
 
+## 🚀 What's New in V4?
+
+**Version 4** introduces a revolutionary **DocAgent-inspired bottom-up understanding strategy**:
+- **6-Stage Pipeline**: Full AST → Leaf Semantics → Bottom-Up Aggregation → SFM → Filtering → Mermaid
+- **Clang AST + CFG Analysis**: Deeper understanding with Control Flow Graphs
+- **LLM-Assisted Semantic Aggregation**: Uses LLM for summarization, not logic inference
+- **Enhanced Detail Levels**: Structurally different outputs for `high`, `medium`, `deep`
+
+👉 **[V4 Quick Start Guide](README_V4_QUICKSTART.md)** | **[V4 Architecture](ARCHITECTURE_v4.md)** | **[V4 Changelog](CHANGELOG_v4.md)**
+
 ## Key Features
 
 ### 🎯 Core Capabilities
@@ -10,10 +20,12 @@ Agent5 is an advanced AI agent that deeply understands C++ projects through **AS
 - **Scenario Flow Model (SFM)**: Deterministic, rule-based flow extraction
 - **RAG with Semantic Search**: Vector-based retrieval with AST-aware chunking
 - **Dual Flowchart Modes**: Generate diagrams from single functions OR complete project scenarios
+- **V4 Bottom-Up Pipeline**: DocAgent-inspired understanding from leaf functions upward
 - **Open-Source Stack**: Uses only open-source models and frameworks
 
 ### 🏗️ Architecture
 
+#### V3 Pipeline (Default)
 The agent implements a strict pipeline that ensures reliability:
 
 ```
@@ -26,6 +38,27 @@ Scenario Extraction (RULE-BASED, DETERMINISTIC)
 Scenario Flow Model (JSON) ← VALIDATION GATE
   ↓
 LLM (TRANSLATOR ONLY, OPTIONAL)
+  ↓
+Mermaid Flowchart
+```
+
+#### V4 Pipeline (Opt-in with `--use_v4`)
+DocAgent-inspired bottom-up understanding:
+
+```
+C++ Project
+  ↓
+Stage 1: Full AST Construction (Clang, NO LLM)
+  ↓
+Stage 2: Leaf-Level Semantic Extraction (Rule-based, NO LLM)
+  ↓
+Stage 3: Bottom-Up Aggregation (LLM-assisted summarization)
+  ↓
+Stage 4: Scenario Flow Model Construction (Deterministic, NO LLM)
+  ↓
+Stage 5: Detail-Level Filtering (Rule-based, NO LLM)
+  ↓
+Stage 6: Mermaid Translation (LLM strict translator)
   ↓
 Mermaid Flowchart
 ```

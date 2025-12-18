@@ -233,7 +233,7 @@ MERMAID CODE:
     def _get_mermaid_arrow(self, edge_type: str) -> str:
         """Get Mermaid arrow syntax for an edge type"""
         if edge_type == "error":
-            return "-.->"]
+            return "-.->
         else:
             return "-->"
     
@@ -248,7 +248,8 @@ MERMAID CODE:
             return False
         
         # Must have at least one arrow
-        if "-->" not in mermaid and "-.->": not in mermaid:
+        if "-->" not in mermaid and "-.->
+" not in mermaid:
             return False
         
         return True

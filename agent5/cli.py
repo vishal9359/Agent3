@@ -321,72 +321,63 @@ def main(argv: list[str] | None = None) -> int:
                 # Check if V4 pipeline is requested
                 if args.use_v4:
                     # V4: DocAgent-inspired bottom-up semantic aggregation
-                    from agent5.pipeline import generate_flowchart_from_project
-                    from agent5.ollama_compat import get_chat_model
+                    from agent5.v4_pipeline import V4Pipeline
                     
                     console.print(f"[bold magenta]Mode: V4 DocAgent-Inspired Pipeline[/bold magenta]")
                     console.print(f"[cyan]Entry file:[/cyan] {args.file}")
                     
-                    if not args.function:
-                        console.print("[red]Error: --function is required for V4 pipeline[/red]")
-                        return 1
+                    console.print(f"[cyan]Entry function:[/cyan] {args.function or 'Auto-detect'}")
                     
-                    console.print(f"[cyan]Entry function:[/cyan] {args.function}")
-                    
-                    # Project path defaults to file parent if not provided
+                    # Project path is REQUIRED for V4 - defaults to file parent if not provided
                     project_path = args.project_path or args.file.parent
                     console.print(f"[cyan]Project path:[/cyan] {project_path}")
+                    console.print(f"[yellow]  Note: Analysis scope = entire project path[/yellow]")
                     
                     console.print(f"[cyan]Detail level:[/cyan] {args.detail_level}")
                     console.print(f"[cyan]Use LLM:[/cyan] {args.use_llm}")
                     console.print(f"[cyan]Debug mode:[/cyan] {args.debug}")
                     console.print(f"[cyan]Output:[/cyan] {args.out}")
-                    
-                    # Parse include paths
-                    include_paths = None
-                    if args.include_paths:
-                        include_paths = [Path(p.strip()) for p in args.include_paths.split(",")]
-                        console.print(f"[cyan]Include paths:[/cyan] {', '.join(str(p) for p in include_paths)}")
-                    
                     console.print()
                     
-                    # Get chat model if LLM is enabled
-                    chat_model = None
-                    if args.use_llm:
-                        chat_model = get_chat_model(
-                            model_name=args.chat_model,
-                            ollama_base_url=args.ollama_base_url,
-                        )
+                    # Determine chat model
+                    chat_model = args.chat_model if args.use_llm else None
                     
                     # Run V4 pipeline
                     try:
-                        mermaid_code = generate_flowchart_from_project(
+                        console.print("[yellow]Running V4 Pipeline (DocAgent-Inspired)...[/yellow]")
+                        console.print()
+                        
+                        pipeline = V4Pipeline(
                             project_path=project_path,
-                            entry_function=args.function,
+                            chat_model=chat_model,
+                            ollama_base_url=args.ollama_base_url,
+                        )
+                        
+                        flowchart = pipeline.run(
                             entry_file=args.file,
+                            entry_function=args.function,
                             detail_level=args.detail_level,
                             output_path=args.out,
-                            chat_model=chat_model,
-                            use_llm=args.use_llm,
-                            include_paths=include_paths,
-                            debug=args.debug,
                         )
                         
                         console.print(f"\n[bold green]✓ V4 Flowchart generated successfully[/bold green]")
                         console.print(f"[green]  Output:[/green] {args.out}")
+                        console.print(f"[green]  Nodes:[/green] {len(flowchart.nodes)}")
+                        console.print(f"[green]  Edges:[/green] {len(flowchart.edges)}")
                         
                         if args.debug:
-                            console.print(f"[green]  Debug artifacts:[/green]")
-                            console.print(f"[green]    - AST context: {project_path / 'debug_ast_context.json'}[/green]")
-                            console.print(f"[green]    - Semantic summaries: {project_path / 'debug_semantic_summaries.json'}[/green]")
-                            console.print(f"[green]    - SFM: {project_path / 'debug_sfm.json'}[/green]")
+                            # Export SFM for debugging
+                            sfm_path = args.out.with_suffix(".sfm.json")
+                            pipeline.export_sfm_json(sfm_path)
+                            console.print(f"[green]  Debug SFM:[/green] {sfm_path}")
                         
                         console.print()
                         
                     except Exception as e:
                         console.print(f"\n[bold red]V4 Pipeline Error:[/bold red] {e}")
+                        import traceback
                         if args.debug:
-                            raise
+                            traceback.print_exc()
                         return 1
                 
                 else:
