@@ -5,8 +5,11 @@ New commands for V4 pipeline:
 - flowchart-v4: Generate flowcharts using the new V4 pipeline
 """
 
+from __future__ import annotations
+
 import sys
 import logging
+import argparse
 from pathlib import Path
 from typing import Optional
 
@@ -267,11 +270,7 @@ if __name__ == '__main__':
 # Alternative argparse-based CLI (used as entry point for agent5-v4 command)
 # =============================================================================
 
-from __future__ import annotations
-
 import argparse
-import sys
-from pathlib import Path
 
 from agent5.logging_utils import console, get_logger
 
