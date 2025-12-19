@@ -40,6 +40,12 @@ class NodeType(Enum):
     CALL = "call"
     RETURN = "return"
     ERROR_EXIT = "error_exit"
+    EARLY_EXIT = "early_exit"
+    VALIDATION = "validation"
+    PERMISSION_CHECK = "permission_check"
+    STATE_MUTATION = "state_mutation"
+    IRREVERSIBLE_SIDE_EFFECT = "irreversible_side_effect"
+    FUNCTION_CALL = "function_call"
 
 
 @dataclass
@@ -544,4 +550,6 @@ class ClangAnalyzer:
             for rel in self.call_graph 
             if rel.caller == function_name
         ]
+
+
 

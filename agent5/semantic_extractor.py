@@ -28,6 +28,7 @@ except ImportError:
 from .clang_analyzer import CFGNode, FunctionCFG, NodeType
 from .call_graph_builder import FunctionInfo, CallGraph
 from .cfg_builder import ControlFlowGraph, BasicBlock
+from .clang_ast_parser import ASTNode
 
 logger = logging.getLogger(__name__)
 
@@ -632,14 +633,9 @@ class LeafSemanticExtractor:
                 effect=f"Decision point: {block.guard_condition}",
                 control_impact=True,
                 state_impact=False,
-                source_location=block.statements[0].location if block.statements else "unknown",
-                guard_condition=block.guard_condition,
-                metadata={
-                    "block_id": block.id,
-                    "has_validation": block.has_validation,
-                    "successors": list(block.successors),
-                    "edge_types": {str(k): v.value for k, v in block.edge_types.items()}
-                }
+                node_id=str(block.id) if hasattr(block, 'id') else f"block_{id(block)}",
+                source_range=None,
+                conditions=[block.guard_condition] if block.guard_condition else []
             )
             actions.append(decision_action)
         
@@ -650,8 +646,9 @@ class LeafSemanticExtractor:
                 effect="Error exit: terminate execution with error",
                 control_impact=True,
                 state_impact=False,
-                source_location=block.statements[-1].location if block.statements else "unknown",
-                metadata={"block_id": block.id, "is_error": True}
+                node_id=str(block.id) if hasattr(block, 'id') else f"block_{id(block)}",
+                source_range=None,
+                is_error_path=True
             )
             actions.append(exit_action)
         
@@ -663,6 +660,9 @@ class LeafSemanticExtractor:
         spelling = stmt.spelling
         location = stmt.location
         
+        # Create node_id from spelling or use a default
+        node_id = spelling if spelling else f"stmt_{id(stmt)}"
+        
         # Validation
         if node_type == NodeType.VALIDATION:
             return SemanticAction(
@@ -670,9 +670,8 @@ class LeafSemanticExtractor:
                 effect=f"Validate: {spelling}",
                 control_impact=True,  # Validation typically affects control flow
                 state_impact=False,
-                source_location=location,
-                code_snippet=spelling,
-                metadata={"validation_function": spelling}
+                node_id=node_id,
+                source_range=None
             )
         
         # Permission check
@@ -682,9 +681,8 @@ class LeafSemanticExtractor:
                 effect=f"Check permission: {spelling}",
                 control_impact=True,
                 state_impact=False,
-                source_location=location,
-                code_snippet=spelling,
-                metadata={"permission_function": spelling}
+                node_id=node_id,
+                source_range=None
             )
         
         # State mutation
@@ -694,21 +692,19 @@ class LeafSemanticExtractor:
                 effect=f"Modify state: {spelling}",
                 control_impact=False,
                 state_impact=True,
-                source_location=location,
-                code_snippet=spelling,
-                metadata={"mutation_type": "state_change"}
+                node_id=node_id,
+                source_range=None
             )
         
         # Irreversible side effect
         elif node_type == NodeType.IRREVERSIBLE_SIDE_EFFECT:
             return SemanticAction(
-                action_type=SemanticActionType.IRREVERSIBLE_SIDE_EFFECT,
+                action_type=SemanticActionType.SIDE_EFFECT,
                 effect=f"Irreversible operation: {spelling}",
                 control_impact=False,
                 state_impact=True,
-                source_location=location,
-                code_snippet=spelling,
-                metadata={"side_effect_function": spelling}
+                node_id=node_id,
+                source_range=None
             )
         
         # Early exit
@@ -718,20 +714,20 @@ class LeafSemanticExtractor:
                 effect=f"Early exit: {spelling}",
                 control_impact=True,
                 state_impact=False,
-                source_location=location,
-                code_snippet=spelling
+                node_id=node_id,
+                source_range=None
             )
         
         # Function call
         elif node_type == NodeType.FUNCTION_CALL:
             return SemanticAction(
-                action_type=SemanticActionType.FUNCTION_CALL,
+                action_type=SemanticActionType.SIDE_EFFECT,
                 effect=f"Call function: {spelling}",
                 control_impact=False,  # May be updated during aggregation
                 state_impact=False,  # May be updated during aggregation
-                source_location=location,
-                code_snippet=spelling,
-                metadata={"called_function": spelling}
+                node_id=node_id,
+                source_range=None,
+                functions_called=[spelling] if spelling else []
             )
         
         # Unknown - skip for now

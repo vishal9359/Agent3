@@ -59,6 +59,22 @@ class ASTNode:
         if not self.cursor:
             return []
         return [ASTNode(cursor=child, kind=child.kind) for child in self.cursor.get_children()]
+    
+    @property
+    def spelling(self) -> str:
+        """Get the spelling (name) of this node"""
+        if self.cursor and hasattr(self.cursor, 'spelling'):
+            return self.cursor.spelling or ""
+        return ""
+    
+    @property
+    def location(self) -> Optional[str]:
+        """Get the source location of this node"""
+        if self.cursor and hasattr(self.cursor, 'location'):
+            loc = self.cursor.location
+            if loc and hasattr(loc, 'file') and loc.file:
+                return f"{loc.file.name}:{loc.line}:{loc.column}"
+        return None
 
 
 @dataclass
