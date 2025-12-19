@@ -15,7 +15,7 @@ NO LLM is used in this stage. Pure deterministic analysis.
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from enum import Enum
 
 try:
@@ -49,9 +49,9 @@ class ASTNode:
     
     Represents a node in the Abstract Syntax Tree with semantic annotations.
     """
-    cursor: Optional[clang.Cursor] = None
+    cursor: Optional[Any] = None  # clang.Cursor when available
     node_type: Optional[NodeType] = None
-    kind: Optional[CursorKind] = None
+    kind: Optional[Any] = None  # CursorKind when available
     
     @property
     def children(self) -> List['ASTNode']:
@@ -514,3 +514,47 @@ def parse_cpp_project(project_path: Path) -> ProjectAST:
     """
     parser = ClangASTParser(project_path)
     return parser.parse_project()
+
+
+# Re-export FunctionInfo and CallGraph from call_graph_builder for backward compatibility
+try:
+    from agent5.call_graph_builder import FunctionInfo, CallGraph
+except (ImportError, ModuleNotFoundError) as e:
+    # If call_graph_builder is not available, define minimal stubs
+    logger.warning(f"call_graph_builder not available ({e}), defining minimal stubs for FunctionInfo and CallGraph")
+    
+    @dataclass
+    class FunctionInfo:  # type: ignore
+        """Minimal stub for FunctionInfo when call_graph_builder is not available."""
+        name: str = ""
+        file_path: Any = None
+        namespace: Optional[str] = None
+        class_name: Optional[str] = None
+        qualified_name: Optional[str] = None
+        start_line: int = 0
+        end_line: int = 0
+        is_leaf: bool = False
+        calls: List[str] = field(default_factory=list)
+        called_by: List[str] = field(default_factory=list)
+        body_statements: Optional[List[Any]] = None
+        ast_root: Optional[Any] = None
+        metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    @dataclass
+    class CallGraph:  # type: ignore
+        """Minimal stub for CallGraph when call_graph_builder is not available."""
+        nodes: Dict[str, Any] = field(default_factory=dict)
+        edges: List[Tuple[str, str]] = field(default_factory=list)
+        functions: Dict[str, FunctionInfo] = field(default_factory=dict)
+        
+        def get_leaf_nodes(self) -> List[Any]:
+            return []
+        
+        def get_nodes_at_level(self, level: int) -> List[Any]:
+            return []
+        
+        def get_callees(self, func_name: str) -> List[Any]:
+            return []
+        
+        def compute_levels(self) -> None:
+            pass
