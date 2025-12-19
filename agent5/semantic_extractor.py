@@ -71,6 +71,45 @@ class SemanticAction:
     is_critical: bool = False  # Critical path operation
     is_error_path: bool = False  # Part of error handling
     confidence: float = 1.0  # Confidence in classification (0-1)
+    
+    def to_dict(self) -> Dict:
+        """Convert to dictionary for JSON serialization"""
+        return {
+            "actionType": self.action_type.value,
+            "effect": self.effect,
+            "controlImpact": self.control_impact,
+            "stateImpact": self.state_impact,
+            "nodeId": self.node_id,
+            "variablesRead": self.variables_read,
+            "variablesWritten": self.variables_written,
+            "functionsCalled": self.functions_called,
+            "conditions": self.conditions,
+            "isCritical": self.is_critical,
+            "isErrorPath": self.is_error_path,
+            "confidence": self.confidence
+        }
+
+
+@dataclass
+class FunctionSemantics:
+    """
+    Semantic description of a function containing all extracted actions.
+    """
+    function_name: str
+    is_leaf: bool = False
+    actions: List[SemanticAction] = field(default_factory=list)
+    exit_actions: List[SemanticAction] = field(default_factory=list)
+    entry_action: Optional[SemanticAction] = None
+    
+    def to_dict(self) -> Dict:
+        """Convert to dictionary for JSON serialization"""
+        return {
+            "functionName": self.function_name,
+            "isLeaf": self.is_leaf,
+            "actions": [action.to_dict() for action in self.actions],
+            "exitActions": [action.to_dict() for action in self.exit_actions],
+            "entryAction": self.entry_action.to_dict() if self.entry_action else None
+        }
 
 
 class LeafSemanticExtractor:
