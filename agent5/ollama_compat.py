@@ -24,6 +24,20 @@ def get_chat_ollama(model: str | None = None, base_url: str | None = None):
     )
 
 
+def get_ollama_llm(model: str | None = None, base_url: str | None = None):
+    """
+    Get an Ollama LLM instance (alias for get_chat_ollama for backward compatibility).
+    
+    Args:
+        model: Model name (defaults to config)
+        base_url: Ollama base URL (defaults to config)
+        
+    Returns:
+        LangChain ChatOllama instance
+    """
+    return get_chat_ollama(model=model, base_url=base_url)
+
+
 def get_ollama_embeddings(model: str | None = None, base_url: str | None = None):
     """
     Get an Ollama embeddings instance.

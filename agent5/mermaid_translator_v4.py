@@ -12,8 +12,7 @@ from typing import Dict, List
 from langchain_ollama import ChatOllama
 from langchain_core.prompts import ChatPromptTemplate
 
-from agent5.detail_filter import FilteredSFM
-from agent5.sfm_constructor import NodeType
+from agent5.sfm_constructor import ScenarioFlowModel, SFMNodeType
 from agent5.logging_utils import get_logger
 
 logger = get_logger(__name__)
@@ -35,7 +34,7 @@ class MermaidTranslatorV4:
             num_ctx=8192
         )
     
-    def translate(self, filtered_sfm: FilteredSFM) -> str:
+    def translate(self, filtered_sfm: ScenarioFlowModel) -> str:
         """Translate filtered SFM to Mermaid flowchart"""
         logger.info(f"Stage 6: Translating SFM to Mermaid (detail level: {filtered_sfm.detail_level.value})")
         
@@ -46,65 +45,69 @@ class MermaidTranslatorV4:
         mermaid_lines = ["flowchart TD"]
         
         # Add nodes
-        for node in filtered_sfm.visible_nodes:
-            mermaid_id = node_map[node.node_id]
+        for node in filtered_sfm.nodes.values():
+            mermaid_id = node_map[node.id]
             shape = self._get_mermaid_shape(node.node_type)
             label = self._sanitize_label(node.label)
             
             mermaid_lines.append(f"    {mermaid_id}{shape[0]}{label}{shape[1]}")
         
-        # Add edges
-        for edge in filtered_sfm.visible_edges:
-            from_id = node_map[edge.from_node]
-            to_id = node_map[edge.to_node]
+        # Add edges from nodes
+        for node in filtered_sfm.nodes.values():
+            from_id = node_map[node.id]
             
-            if edge.condition:
-                edge_label = self._sanitize_label(edge.condition)
-                mermaid_lines.append(f"    {from_id} -->|{edge_label}| {to_id}")
-            elif edge.label:
-                edge_label = self._sanitize_label(edge.label)
-                mermaid_lines.append(f"    {from_id} -->|{edge_label}| {to_id}")
-            else:
-                mermaid_lines.append(f"    {from_id} --> {to_id}")
+            # Add true/false branches for decision nodes
+            if node.true_branch and node.true_branch in node_map:
+                to_id = node_map[node.true_branch]
+                condition = self._sanitize_label(node.condition or "Yes")
+                mermaid_lines.append(f"    {from_id} -->|{condition}| {to_id}")
+            
+            if node.false_branch and node.false_branch in node_map:
+                to_id = node_map[node.false_branch]
+                condition = self._sanitize_label("No")
+                mermaid_lines.append(f"    {from_id} -->|{condition}| {to_id}")
+            
+            # Add next nodes
+            for next_id in node.next_nodes:
+                if next_id in node_map:
+                    to_id = node_map[next_id]
+                    mermaid_lines.append(f"    {from_id} --> {to_id}")
         
         mermaid_code = "\n".join(mermaid_lines)
         
         # Optionally use LLM to improve label clarity (without changing semantics)
-        if len(filtered_sfm.visible_nodes) > 2:  # Skip for trivial diagrams
+        if len(filtered_sfm.nodes) > 2:  # Skip for trivial diagrams
             mermaid_code = self._llm_polish_labels(mermaid_code, filtered_sfm)
         
         logger.info("Mermaid translation complete")
         return mermaid_code
     
-    def _build_node_map(self, filtered_sfm: FilteredSFM) -> Dict[str, str]:
+    def _build_node_map(self, filtered_sfm: ScenarioFlowModel) -> Dict[str, str]:
         """Build mapping from node IDs to Mermaid IDs"""
         node_map = {}
-        for i, node in enumerate(filtered_sfm.visible_nodes):
-            if node.node_type == NodeType.START:
-                node_map[node.node_id] = "START"
-            elif node.node_type == NodeType.END:
-                node_map[node.node_id] = "END"
+        nodes_list = list(filtered_sfm.nodes.values())
+        for i, node in enumerate(nodes_list):
+            if node.node_type == SFMNodeType.START:
+                node_map[node.id] = "START"
+            elif node.node_type == SFMNodeType.END:
+                node_map[node.id] = "END"
             else:
-                node_map[node.node_id] = f"N{i}"
+                node_map[node.id] = f"N{i}"
         return node_map
     
-    def _get_mermaid_shape(self, node_type: NodeType) -> tuple[str, str]:
+    def _get_mermaid_shape(self, node_type: SFMNodeType) -> tuple[str, str]:
         """Get Mermaid shape syntax for node type"""
-        if node_type == NodeType.START:
+        if node_type == SFMNodeType.START:
             return ("([", "])")
-        elif node_type == NodeType.END:
+        elif node_type == SFMNodeType.END:
             return ("([", "])")
-        elif node_type == NodeType.DECISION:
+        elif node_type == SFMNodeType.DECISION:
             return ("{", "}")
-        elif node_type == NodeType.VALIDATION:
-            return ("{", "}")
-        elif node_type == NodeType.ERROR_HANDLER:
+        elif node_type == SFMNodeType.ERROR:
             return ("{{", "}}")
-        elif node_type == NodeType.STATE_CHANGE:
+        elif node_type == SFMNodeType.PROCESS:
             return ("[", "]")
-        elif node_type == NodeType.OPERATION:
-            return ("[", "]")
-        elif node_type == NodeType.SUB_OPERATION:
+        elif node_type == SFMNodeType.SUBPROCESS:
             return ("[[", "]]")
         else:
             return ("[", "]")
@@ -120,7 +123,7 @@ class MermaidTranslatorV4:
             sanitized = sanitized[:97] + "..."
         return sanitized
     
-    def _llm_polish_labels(self, mermaid_code: str, filtered_sfm: FilteredSFM) -> str:
+    def _llm_polish_labels(self, mermaid_code: str, filtered_sfm: ScenarioFlowModel) -> str:
         """Use LLM to polish labels for clarity (optional enhancement)"""
         prompt = ChatPromptTemplate.from_messages([
             ("system", """You are a Mermaid flowchart syntax expert. Your ONLY task is to improve label clarity in the provided Mermaid code without changing:
@@ -178,4 +181,6 @@ Output improved Mermaid code:""")
         except Exception as e:
             logger.warning(f"LLM polish failed: {e}, using original")
             return mermaid_code
+
+
 
