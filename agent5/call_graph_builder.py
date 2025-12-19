@@ -248,8 +248,23 @@ def _analyze_function(
     )
 
 
-def _analyze_file(file_path: Path) -> list[FunctionInfo]:
-    """Analyze a single C++ file and extract function information."""
+def _analyze_file(file_path: Path, project_root: Path) -> list[FunctionInfo]:
+    """Analyze a single C++ file and extract function information.
+
+    Only files that are inside the project root AND not in excluded directories
+    are analyzed. This enforces a hard project boundary for AST analysis.
+    """
+    try:
+        file_path = file_path.resolve()
+    except Exception:
+        return []
+
+    excluded = {"build", "out", ".cache", "external", "third_party"}
+    if project_root not in file_path.parents and file_path != project_root:
+        return []
+    for part in file_path.parts:
+        if part in excluded or part.startswith("bazel-"):
+            return []
     try:
         source_code = file_path.read_text(encoding="utf-8", errors="ignore")
     except Exception:
@@ -307,22 +322,26 @@ def build_call_graph(project_path: Path) -> CallGraph:
     Returns:
         CallGraph with all functions and their relationships
     """
-    # Collect all C++ files
-    cpp_files = []
+    project_path = project_path.resolve()
+
+    # Collect all C++ files strictly within project root
+    cpp_files: list[Path] = []
     for ext in ["*.cpp", "*.cc", "*.cxx", "*.c", "*.hpp", "*.h", "*.hxx"]:
-        cpp_files.extend(project_path.rglob(ext))
+        for candidate in project_path.rglob(ext):
+            # Directory filtering is handled in _analyze_file via project_root
+            cpp_files.append(candidate)
     
     # Analyze all files
     all_functions: dict[str, FunctionInfo] = {}
     
     for file_path in cpp_files:
-        functions = _analyze_file(file_path)
+        functions = _analyze_file(file_path, project_path)
         for func in functions:
             # Use qualified name as key
             all_functions[func.qualified_name] = func
     
-    # Build edges and update called_by relationships
-    edges = []
+    # Build edges and update called_by relationships (project-only)
+    edges: list[tuple[str, str]] = []
     
     for func in all_functions.values():
         for callee_name in func.calls:
@@ -358,6 +377,15 @@ def build_call_graph(project_path: Path) -> CallGraph:
             if resolved_callee:
                 edges.append((func.qualified_name, resolved_callee))
                 all_functions[resolved_callee].called_by.append(func.qualified_name)
+
+    # Leaf detection: consider ONLY calls to project-defined functions.
+    # A function is leaf if it does not call any other project function.
+    project_callees = {callee for _, callee in edges}
+    project_callers = {caller for caller, _ in edges}
+
+    for qname, func in all_functions.items():
+        # If this function never appears as a caller in project edges, it's a leaf.
+        func.is_leaf = qname not in project_callers
     
     # Create call graph nodes
     nodes = {

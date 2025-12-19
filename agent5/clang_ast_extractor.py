@@ -134,7 +134,9 @@ class ClangASTExtractor:
             project_path: Root path of the C++ project
             include_paths: Additional include directories
         """
-        self.project_path = Path(project_path)
+        self.project_path = Path(project_path).resolve()
+        if not self.project_path.is_dir():
+            raise ValueError(f"Invalid project root (not a directory): {self.project_path}")
         self.include_paths = include_paths or []
         
         # Initialize libclang
@@ -193,12 +195,28 @@ class ClangASTExtractor:
         return project_ast
     
     def _discover_cpp_files(self) -> list[Path]:
-        """Discover all C++ source files in the project."""
+        """Discover all C++ source files in the project, enforcing project boundary."""
         extensions = {".cpp", ".cc", ".cxx", ".c++"}
-        cpp_files = []
+        cpp_files: list[Path] = []
+
+        excluded = {"build", "out", ".cache", "external", "third_party"}
+
+        def _in_scope(path: Path) -> bool:
+            try:
+                path = path.resolve()
+            except Exception:
+                return False
+            if self.project_path not in path.parents and path != self.project_path:
+                return False
+            for part in path.parts:
+                if part in excluded or part.startswith("bazel-"):
+                    return False
+            return True
         
         for ext in extensions:
-            cpp_files.extend(self.project_path.rglob(f"*{ext}"))
+            for candidate in self.project_path.rglob(f"*{ext}"):
+                if _in_scope(candidate):
+                    cpp_files.append(candidate)
         
         return sorted(cpp_files)
     

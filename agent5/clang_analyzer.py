@@ -89,6 +89,15 @@ class CallRelation:
     is_conditional: bool = False  # Called within if/switch/loop
 
 
+EXCLUDED_DIR_NAMES = {
+    "build",
+    "out",
+    ".cache",
+    "external",
+    "third_party",
+}
+
+
 class ClangAnalyzer:
     """Main analyzer for C++ projects using Clang"""
     
@@ -100,7 +109,9 @@ class ClangAnalyzer:
             project_path: Root path of the C++ project
             compile_commands: Path to compile_commands.json (optional)
         """
-        self.project_path = Path(project_path)
+        self.project_path = Path(project_path).resolve()
+        if not self.project_path.is_dir():
+            raise ValueError(f"Invalid project root (not a directory): {self.project_path}")
         self.compile_commands = compile_commands
         
         # Initialize Clang index
@@ -116,6 +127,25 @@ class ClangAnalyzer:
         
         logger.info(f"ClangAnalyzer initialized for project: {project_path}")
     
+    def _is_in_project_scope(self, path: Path) -> bool:
+        """
+        Check if a path is within the project root and not in excluded directories.
+        """
+        try:
+            path = path.resolve()
+        except Exception:
+            return False
+
+        if self.project_path not in path.parents and path != self.project_path:
+            return False
+
+        # Exclude common external / build / cache directories
+        for part in path.parts:
+            if part in EXCLUDED_DIR_NAMES or part.startswith("bazel-"):
+                return False
+
+        return True
+
     def analyze_project(self, file_patterns: Optional[List[str]] = None) -> None:
         """
         Analyze the entire C++ project
@@ -126,10 +156,12 @@ class ClangAnalyzer:
         if file_patterns is None:
             file_patterns = ['*.cpp', '*.cc', '*.cxx', '*.c++']
         
-        # Find all C++ source files
-        cpp_files = []
+        # Find all C++ source files strictly within project root
+        cpp_files: List[Path] = []
         for pattern in file_patterns:
-            cpp_files.extend(self.project_path.rglob(pattern))
+            for candidate in self.project_path.rglob(pattern):
+                if self._is_in_project_scope(candidate):
+                    cpp_files.append(candidate)
         
         logger.info(f"Found {len(cpp_files)} C++ files to analyze")
         
@@ -189,6 +221,19 @@ class ClangAnalyzer:
     def _build_cfgs_from_tu(self, tu: clang.TranslationUnit, file_path: str) -> None:
         """Extract all function CFGs from a translation unit"""
         
+        def _cursor_in_project_file(c: clang.Cursor) -> bool:
+            """
+            Return True if the cursor's location is within the project root.
+            This is the HARD AST boundary: anything outside is ignored.
+            """
+            if not c.location or not c.location.file:
+                return False
+            try:
+                c_path = Path(c.location.file.name).resolve()
+            except Exception:
+                return False
+            return self._is_in_project_scope(c_path)
+
         def visit_node(cursor: clang.Cursor, parent_qualified_name: str = ""):
             """Recursively visit AST nodes to find functions"""
             
@@ -202,9 +247,9 @@ class ClangAnalyzer:
             else:
                 qualified_prefix = parent_qualified_name
             
-            # Process function definitions
+            # Process function definitions only if they belong to the project
             if cursor.kind in [CursorKind.FUNCTION_DECL, CursorKind.CXX_METHOD]:
-                if cursor.is_definition():
+                if cursor.is_definition() and _cursor_in_project_file(cursor):
                     try:
                         cfg = self._build_function_cfg(cursor, qualified_prefix, file_path)
                         if cfg:
@@ -213,7 +258,8 @@ class ClangAnalyzer:
                     except Exception as e:
                         logger.error(f"Failed to build CFG for {cursor.spelling}: {e}")
             
-            # Recurse into children
+            # Recurse into children (we still walk the tree, but function bodies
+            # for non-project files are ignored by the _cursor_in_project_file check)
             for child in cursor.get_children():
                 visit_node(child, qualified_prefix)
         
@@ -519,12 +565,18 @@ class ClangAnalyzer:
     
     def _identify_leaf_functions(self) -> None:
         """Identify functions that don't call other functions"""
-        
-        callers = {rel.caller for rel in self.call_graph}
-        
+        # Only consider calls where both caller and callee are project functions.
+        project_functions = set(self.function_cfgs.keys())
+        project_callers: Set[str] = set()
+
+        for rel in self.call_graph:
+            if rel.caller in project_functions and rel.callee in project_functions:
+                project_callers.add(rel.caller)
+
         for qualified_name, cfg in self.function_cfgs.items():
-            if qualified_name not in callers:
-                cfg.is_leaf = True
+            # Leaf = does not call any other project-defined function
+            cfg.is_leaf = qualified_name not in project_callers
+            if cfg.is_leaf:
                 logger.debug(f"Identified leaf function: {qualified_name}")
     
     def get_function_cfg(self, qualified_name: str) -> Optional[FunctionCFG]:

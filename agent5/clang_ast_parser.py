@@ -148,7 +148,9 @@ class ClangASTParser:
                 "or ensure clang is installed on your system."
             )
         
-        self.project_path = project_path
+        self.project_path = Path(project_path).resolve()
+        if not self.project_path.is_dir():
+            raise ValueError(f"Invalid project root (not a directory): {self.project_path}")
         self.compile_commands = compile_commands
         self.index = clang.Index.create()
         self.ast = ProjectAST(project_path=project_path)
@@ -233,12 +235,28 @@ class ClangASTParser:
         return self.ast
     
     def _find_cpp_files(self) -> List[Path]:
-        """Find all C++ source files in the project."""
+        """Find all C++ source files in the project, respecting project boundary."""
         extensions = {".cpp", ".cc", ".cxx", ".c++", ".hpp", ".h", ".hh"}
-        cpp_files = []
+        cpp_files: List[Path] = []
+
+        excluded = {"build", "out", ".cache", "external", "third_party"}
+
+        def _in_scope(path: Path) -> bool:
+            try:
+                path = path.resolve()
+            except Exception:
+                return False
+            if self.project_path not in path.parents and path != self.project_path:
+                return False
+            for part in path.parts:
+                if part in excluded or part.startswith("bazel-"):
+                    return False
+            return True
         
         for ext in extensions:
-            cpp_files.extend(self.project_path.rglob(f"*{ext}"))
+            for candidate in self.project_path.rglob(f"*{ext}"):
+                if _in_scope(candidate):
+                    cpp_files.append(candidate)
         
         return cpp_files
     
@@ -263,8 +281,18 @@ class ClangASTParser:
         self._extract_functions(tu.cursor, str(file_path))
     
     def _extract_functions(self, cursor: "clang.Cursor", file_path: str):
-        """Recursively extract all function definitions."""
-        if cursor.kind == CursorKind.FUNCTION_DECL and cursor.is_definition():
+        """Recursively extract all function definitions within the project boundary."""
+        def _cursor_in_project_file(c: "clang.Cursor") -> bool:
+            loc = getattr(c, "location", None)
+            if not loc or not loc.file:
+                return False
+            try:
+                c_path = Path(loc.file.name).resolve()
+            except Exception:
+                return False
+            return str(c_path).startswith(str(self.project_path))
+
+        if cursor.kind == CursorKind.FUNCTION_DECL and cursor.is_definition() and _cursor_in_project_file(cursor):
             self._build_function_cfg(cursor, file_path)
         
         # Recurse into children

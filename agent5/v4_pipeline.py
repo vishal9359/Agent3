@@ -49,7 +49,9 @@ class V4Pipeline:
             model_name: Ollama model for LLM stages
             use_llm_translator: Whether to use LLM for Mermaid translation
         """
-        self.project_path = Path(project_path)
+        self.project_path = Path(project_path).resolve()
+        if not self.project_path.is_dir():
+            raise ValueError(f"Invalid project root (not a directory): {self.project_path}")
         self.model_name = model_name
         
         # Initialize pipeline components

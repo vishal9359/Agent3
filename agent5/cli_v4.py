@@ -29,6 +29,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     
     parser.add_argument(
+        "--project-root",
+        type=_path,
+        default=None,
+        help="Root path that defines the project boundary for AST/CFG/semantics (default: current working directory).",
+    )
+    
+    parser.add_argument(
         "--project-path",
         required=True,
         type=_path,
@@ -117,6 +124,13 @@ def main(argv: list[str] | None = None) -> int:
         
         # Display configuration
         console.print("[bold]Configuration:[/bold]")
+        # Determine project root (hard AST boundary)
+        project_root = args.project_root or args.project_path or Path.cwd()
+        if not project_root.is_dir():
+            console.print(f"[bold red]Error:[/bold red] Invalid project root (not a directory): {project_root}")
+            return 1
+
+        console.print(f"  [cyan]Project root:[/cyan] {project_root}")
         console.print(f"  [cyan]Project path:[/cyan] {args.project_path}")
         console.print(f"  [cyan]Entry function:[/cyan] {args.entry_function or 'Auto-detect'}")
         if args.entry_file:
@@ -148,8 +162,8 @@ def main(argv: list[str] | None = None) -> int:
         console.print("  [yellow]Stage 6:[/yellow] Mermaid Translation")
         console.print()
         
-        mermaid = generate_flowchart_from_project(
-            project_path=args.project_path,
+            mermaid = generate_flowchart_from_project(
+                project_path=project_root,
             entry_function=args.entry_function,
             entry_file=args.entry_file,
             detail_level=args.detail_level,

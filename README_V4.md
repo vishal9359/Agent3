@@ -133,6 +133,26 @@ agent5-v4 flowchart \
     --output flowchart.mmd
 ```
 
+### Project-Bounded Analysis (AST Scope)
+
+All V4 analysis is **hard-bounded to your project root**:
+
+- Only files **under the project root** are parsed for AST/CFG/semantics.
+- System headers (`/usr/include`, `/usr/local/include`, toolchain headers) and
+  third‑party/external code (`external/`, `third_party/`, `build/`, `out/`, `.cache/`, `bazel-*`) are **never expanded**.
+- Imported symbols from libraries (e.g., `std::vector`, `std::sort`) may appear as types or call names,
+  but their internal definitions are treated as **opaque** – no AST traversal, no semantics, no SFM nodes.
+- Leaf detection and bottom‑up aggregation consider **only project-defined functions**; calls that cannot be
+  resolved to project functions are treated as external actions and are not backtracked into.
+
+The effective project boundary is:
+
+- For the V4 CLI (`agent5-v4`): the `--project-path` / `--project-root` directory.
+- For library usage: the `project_path` / `project_root` you pass into the pipeline/analyzers.
+
+If the configured project root is invalid (does not exist or is not a directory), the tools **fail loudly**
+instead of silently degrading, ensuring deterministic and predictable behavior.
+
 ### Usage Options
 
 ```bash
@@ -580,3 +600,5 @@ For questions, issues, or contributions, please open an issue on GitHub.
 ---
 
 **Agent5 V4** - Deep understanding, clear presentation.
+
+
