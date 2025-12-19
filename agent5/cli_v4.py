@@ -162,8 +162,8 @@ def main(argv: list[str] | None = None) -> int:
         console.print("  [yellow]Stage 6:[/yellow] Mermaid Translation")
         console.print()
         
-            mermaid = generate_flowchart_from_project(
-                project_path=project_root,
+        mermaid = generate_flowchart_from_project(
+            project_path=project_root,
             entry_function=args.entry_function,
             entry_file=args.entry_file,
             detail_level=args.detail_level,
