@@ -29,6 +29,9 @@ from clang.cindex import (
 
 logger = logging.getLogger(__name__)
 
+# Import centralized project exclusion configuration
+from agent5.fs_utils import is_in_project_scope, PROJECT_EXCLUDE_DIRS, PROJECT_EXCLUDE_PATTERNS
+
 
 @dataclass
 class BasicBlock:
@@ -198,24 +201,11 @@ class ClangASTExtractor:
         """Discover all C++ source files in the project, enforcing project boundary."""
         extensions = {".cpp", ".cc", ".cxx", ".c++"}
         cpp_files: list[Path] = []
-
-        excluded = {"build", "out", ".cache", "external", "third_party"}
-
-        def _in_scope(path: Path) -> bool:
-            try:
-                path = path.resolve()
-            except Exception:
-                return False
-            if self.project_path not in path.parents and path != self.project_path:
-                return False
-            for part in path.parts:
-                if part in excluded or part.startswith("bazel-"):
-                    return False
-            return True
         
         for ext in extensions:
             for candidate in self.project_path.rglob(f"*{ext}"):
-                if _in_scope(candidate):
+                # Use centralized exclusion check
+                if is_in_project_scope(candidate, self.project_path):
                     cpp_files.append(candidate)
         
         return sorted(cpp_files)
@@ -250,20 +240,23 @@ class ClangASTExtractor:
         """Extract all functions from a translation unit."""
         
         def visit(cursor: Cursor) -> None:
-            # Only consider cursors from the main file (not includes)
-            if cursor.location.file and str(cursor.location.file.name).startswith(str(self.project_path)):
-                if cursor.kind == CursorKind.FUNCTION_DECL:
-                    # Only include definitions, not declarations
-                    if cursor.is_definition():
-                        func_name = self._get_qualified_name(cursor)
-                        project_ast.functions[func_name] = cursor
-                        logger.debug(f"Found function: {func_name}")
-                
-                elif cursor.kind == CursorKind.CXX_METHOD:
-                    if cursor.is_definition():
-                        func_name = self._get_qualified_name(cursor)
-                        project_ast.functions[func_name] = cursor
-                        logger.debug(f"Found method: {func_name}")
+            # HARD AST BOUNDARY: Only process nodes from project files
+            if cursor.location.file:
+                file_path = Path(cursor.location.file.name)
+                # Use centralized exclusion check
+                if is_in_project_scope(file_path, self.project_path):
+                    if cursor.kind == CursorKind.FUNCTION_DECL:
+                        # Only include definitions, not declarations
+                        if cursor.is_definition():
+                            func_name = self._get_qualified_name(cursor)
+                            project_ast.functions[func_name] = cursor
+                            logger.debug(f"Found function: {func_name}")
+                    
+                    elif cursor.kind == CursorKind.CXX_METHOD:
+                        if cursor.is_definition():
+                            func_name = self._get_qualified_name(cursor)
+                            project_ast.functions[func_name] = cursor
+                            logger.debug(f"Found method: {func_name}")
             
             # Recurse into children
             for child in cursor.get_children():

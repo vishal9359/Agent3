@@ -28,6 +28,9 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Import centralized project exclusion configuration
+from agent5.fs_utils import is_in_project_scope, PROJECT_EXCLUDE_DIRS, PROJECT_EXCLUDE_PATTERNS
+
 
 class NodeType(Enum):
     """Types of AST/CFG nodes"""
@@ -238,24 +241,11 @@ class ClangASTParser:
         """Find all C++ source files in the project, respecting project boundary."""
         extensions = {".cpp", ".cc", ".cxx", ".c++", ".hpp", ".h", ".hh"}
         cpp_files: List[Path] = []
-
-        excluded = {"build", "out", ".cache", "external", "third_party"}
-
-        def _in_scope(path: Path) -> bool:
-            try:
-                path = path.resolve()
-            except Exception:
-                return False
-            if self.project_path not in path.parents and path != self.project_path:
-                return False
-            for part in path.parts:
-                if part in excluded or part.startswith("bazel-"):
-                    return False
-            return True
         
         for ext in extensions:
             for candidate in self.project_path.rglob(f"*{ext}"):
-                if _in_scope(candidate):
+                # Use centralized exclusion check
+                if is_in_project_scope(candidate, self.project_path):
                     cpp_files.append(candidate)
         
         return cpp_files
@@ -282,18 +272,20 @@ class ClangASTParser:
     
     def _extract_functions(self, cursor: "clang.Cursor", file_path: str):
         """Recursively extract all function definitions within the project boundary."""
-        def _cursor_in_project_file(c: "clang.Cursor") -> bool:
-            loc = getattr(c, "location", None)
-            if not loc or not loc.file:
-                return False
-            try:
-                c_path = Path(loc.file.name).resolve()
-            except Exception:
-                return False
-            return str(c_path).startswith(str(self.project_path))
-
-        if cursor.kind == CursorKind.FUNCTION_DECL and cursor.is_definition() and _cursor_in_project_file(cursor):
-            self._build_function_cfg(cursor, file_path)
+        # HARD AST BOUNDARY: Only process nodes from project files
+        if cursor.location.file:
+            cursor_file_path = Path(cursor.location.file.name)
+            # Use centralized exclusion check
+            if not is_in_project_scope(cursor_file_path, self.project_path):
+                # Skip this node and all its children (external code)
+                return
+        
+        if cursor.kind == CursorKind.FUNCTION_DECL and cursor.is_definition():
+            # Double-check file is in project scope
+            if cursor.location.file:
+                cursor_file_path = Path(cursor.location.file.name)
+                if is_in_project_scope(cursor_file_path, self.project_path):
+                    self._build_function_cfg(cursor, file_path)
         
         # Recurse into children
         for child in cursor.get_children():

@@ -11,7 +11,7 @@ CPP_EXTS = {".cpp", ".cc", ".cxx", ".c++", ".hpp", ".h", ".hh", ".hxx", ".h++", 
 # Additional extensions for RAG context
 RAG_EXTRA_EXTS = {".txt", ".md", ".cmake", ".mk", ".makefile"}
 
-# Directories to exclude by default
+# Directories to exclude by default (for RAG/indexing)
 DEFAULT_EXCLUDE_DIRS = {
     "build",
     "builds",
@@ -30,6 +30,57 @@ DEFAULT_EXCLUDE_DIRS = {
     "env",
     ".env",
 }
+
+# Directories to exclude from AST/CFG/semantic analysis (project boundary enforcement)
+# These directories contain external libraries, build artifacts, and third-party code
+PROJECT_EXCLUDE_DIRS = {
+    # Build artifacts
+    "build",
+    "builds",
+    "out",
+    "dist",
+    "target",
+    "cmake-build-*",
+    "bazel-*",  # Bazel build directories (handled specially)
+    
+    # Cache directories
+    ".cache",
+    ".ccache",
+    
+    # External/third-party libraries
+    "external",
+    "third_party",
+    "thirdparty",
+    "third-party",
+    "vendor",
+    "vendors",
+    "libs",
+    "lib",
+    "deps",
+    "dependencies",
+    "vcpkg_installed",
+    "vcpkg",
+    "conan",
+    "conan_data",
+    
+    # System/toolchain includes (should not be in project root, but just in case)
+    "usr",
+    "usr_local",
+    
+    # IDE/build system directories
+    ".vs",
+    ".vscode",
+    ".idea",
+    ".clangd",
+    ".bazel",
+    ".bazelrc",
+}
+
+# Patterns that should be excluded (checked with startswith)
+PROJECT_EXCLUDE_PATTERNS = [
+    "bazel-",  # Bazel build directories
+    "cmake-build-",  # CMake build directories
+]
 
 
 @dataclass(frozen=True)
@@ -102,4 +153,64 @@ def safe_read_text(path: Path, *, encoding: str = "utf-8") -> str:
         return path.read_text(encoding=encoding, errors="ignore")
     except Exception:
         return ""
+
+
+def is_in_project_scope(file_path: Path, project_root: Path) -> bool:
+    """
+    Check if a file path is within the project scope and should be analyzed.
+    
+    This enforces the hard AST boundary: only files within the project root
+    and not in excluded directories are considered for AST/CFG/semantic analysis.
+    
+    Args:
+        file_path: Path to check (can be absolute or relative)
+        project_root: Root path of the project
+        
+    Returns:
+        True if the file should be included in analysis, False otherwise
+    """
+    try:
+        # Resolve both paths to absolute
+        file_path = Path(file_path).resolve()
+        project_root = Path(project_root).resolve()
+        
+        # Check if file is within project root
+        try:
+            relative_path = file_path.relative_to(project_root)
+        except ValueError:
+            # File is not under project root
+            return False
+        
+        # Check each part of the path for excluded directories
+        for part in relative_path.parts:
+            # Check against excluded directory names
+            if part in PROJECT_EXCLUDE_DIRS:
+                return False
+            
+            # Check against exclusion patterns
+            for pattern in PROJECT_EXCLUDE_PATTERNS:
+                if part.startswith(pattern):
+                    return False
+        
+        return True
+        
+    except Exception:
+        # On any error, exclude the file (fail-safe)
+        return False
+
+
+def should_exclude_path(path: Path, project_root: Path) -> bool:
+    """
+    Check if a path should be excluded from project analysis.
+    
+    This is an alias for `not is_in_project_scope()` for readability.
+    
+    Args:
+        path: Path to check
+        project_root: Root path of the project
+        
+    Returns:
+        True if the path should be excluded, False if it should be included
+    """
+    return not is_in_project_scope(path, project_root)
 

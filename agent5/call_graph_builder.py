@@ -24,6 +24,9 @@ from typing import Any
 from tree_sitter import Language, Node, Parser
 from tree_sitter_cpp import language as cpp_language
 
+# Import centralized project exclusion configuration
+from agent5.fs_utils import is_in_project_scope, PROJECT_EXCLUDE_DIRS, PROJECT_EXCLUDE_PATTERNS
+
 
 @dataclass
 class FunctionInfo:
@@ -249,22 +252,22 @@ def _analyze_function(
 
 
 def _analyze_file(file_path: Path, project_root: Path) -> list[FunctionInfo]:
-    """Analyze a single C++ file and extract function information.
-
+    """
+    Analyze a single C++ file and extract function information.
+    
     Only files that are inside the project root AND not in excluded directories
     are analyzed. This enforces a hard project boundary for AST analysis.
+    
+    Args:
+        file_path: Path to the C++ file to analyze
+        project_root: Root path of the project (for exclusion checking)
+    
+    Returns:
+        List of FunctionInfo objects, or empty list if file should be excluded
     """
-    try:
-        file_path = file_path.resolve()
-    except Exception:
+    # Use centralized exclusion check - skip files outside project scope
+    if not is_in_project_scope(file_path, project_root):
         return []
-
-    excluded = {"build", "out", ".cache", "external", "third_party"}
-    if project_root not in file_path.parents and file_path != project_root:
-        return []
-    for part in file_path.parts:
-        if part in excluded or part.startswith("bazel-"):
-            return []
     try:
         source_code = file_path.read_text(encoding="utf-8", errors="ignore")
     except Exception:
@@ -324,12 +327,13 @@ def build_call_graph(project_path: Path) -> CallGraph:
     """
     project_path = project_path.resolve()
 
-    # Collect all C++ files strictly within project root
+    # Collect all C++ files (using centralized exclusion)
     cpp_files: list[Path] = []
     for ext in ["*.cpp", "*.cc", "*.cxx", "*.c", "*.hpp", "*.h", "*.hxx"]:
         for candidate in project_path.rglob(ext):
-            # Directory filtering is handled in _analyze_file via project_root
-            cpp_files.append(candidate)
+            # Use centralized exclusion check
+            if is_in_project_scope(candidate, project_path):
+                cpp_files.append(candidate)
     
     # Analyze all files
     all_functions: dict[str, FunctionInfo] = {}

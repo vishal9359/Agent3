@@ -29,6 +29,9 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# Import centralized project exclusion configuration
+from agent5.fs_utils import is_in_project_scope, PROJECT_EXCLUDE_DIRS, PROJECT_EXCLUDE_PATTERNS
+
 
 class NodeType(Enum):
     """Types of CFG nodes"""
@@ -89,13 +92,8 @@ class CallRelation:
     is_conditional: bool = False  # Called within if/switch/loop
 
 
-EXCLUDED_DIR_NAMES = {
-    "build",
-    "out",
-    ".cache",
-    "external",
-    "third_party",
-}
+# Use centralized exclusion configuration from fs_utils
+# EXCLUDED_DIR_NAMES is now imported from agent5.fs_utils
 
 
 class ClangAnalyzer:
@@ -136,15 +134,8 @@ class ClangAnalyzer:
         except Exception:
             return False
 
-        if self.project_path not in path.parents and path != self.project_path:
-            return False
-
-        # Exclude common external / build / cache directories
-        for part in path.parts:
-            if part in EXCLUDED_DIR_NAMES or part.startswith("bazel-"):
-                return False
-
-        return True
+        # Use centralized exclusion check
+        return is_in_project_scope(path, self.project_path)
 
     def analyze_project(self, file_patterns: Optional[List[str]] = None) -> None:
         """
@@ -221,21 +212,16 @@ class ClangAnalyzer:
     def _build_cfgs_from_tu(self, tu: clang.TranslationUnit, file_path: str) -> None:
         """Extract all function CFGs from a translation unit"""
         
-        def _cursor_in_project_file(c: clang.Cursor) -> bool:
-            """
-            Return True if the cursor's location is within the project root.
-            This is the HARD AST boundary: anything outside is ignored.
-            """
-            if not c.location or not c.location.file:
-                return False
-            try:
-                c_path = Path(c.location.file.name).resolve()
-            except Exception:
-                return False
-            return self._is_in_project_scope(c_path)
-
         def visit_node(cursor: clang.Cursor, parent_qualified_name: str = ""):
             """Recursively visit AST nodes to find functions"""
+            
+            # HARD AST BOUNDARY: Only process nodes from project files
+            if cursor.location.file:
+                cursor_file_path = Path(cursor.location.file.name)
+                # Use centralized exclusion check
+                if not is_in_project_scope(cursor_file_path, self.project_path):
+                    # Skip this node and all its children (external code)
+                    return
             
             # Build qualified name for namespaces and classes
             if cursor.kind in [CursorKind.NAMESPACE, CursorKind.CLASS_DECL, 
@@ -247,19 +233,22 @@ class ClangAnalyzer:
             else:
                 qualified_prefix = parent_qualified_name
             
-            # Process function definitions only if they belong to the project
+            # Process function definitions
             if cursor.kind in [CursorKind.FUNCTION_DECL, CursorKind.CXX_METHOD]:
-                if cursor.is_definition() and _cursor_in_project_file(cursor):
-                    try:
-                        cfg = self._build_function_cfg(cursor, qualified_prefix, file_path)
-                        if cfg:
-                            self.function_cfgs[cfg.qualified_name] = cfg
-                            logger.debug(f"Built CFG for: {cfg.qualified_name}")
-                    except Exception as e:
-                        logger.error(f"Failed to build CFG for {cursor.spelling}: {e}")
+                if cursor.is_definition():
+                    # Double-check file is in project scope
+                    if cursor.location.file:
+                        cursor_file_path = Path(cursor.location.file.name)
+                        if is_in_project_scope(cursor_file_path, self.project_path):
+                            try:
+                                cfg = self._build_function_cfg(cursor, qualified_prefix, file_path)
+                                if cfg:
+                                    self.function_cfgs[cfg.qualified_name] = cfg
+                                    logger.debug(f"Built CFG for: {cfg.qualified_name}")
+                            except Exception as e:
+                                logger.error(f"Failed to build CFG for {cursor.spelling}: {e}")
             
-            # Recurse into children (we still walk the tree, but function bodies
-            # for non-project files are ignored by the _cursor_in_project_file check)
+            # Recurse into children
             for child in cursor.get_children():
                 visit_node(child, qualified_prefix)
         
