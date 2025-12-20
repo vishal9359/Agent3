@@ -74,6 +74,11 @@ PROJECT_EXCLUDE_DIRS = {
     ".clangd",
     ".bazel",
     ".bazelrc",
+    "proto",
+    "generated",
+    "test",
+    "unit-tests",
+    "integration-tests",
 }
 
 # Patterns that should be excluded (checked with startswith)

@@ -100,7 +100,7 @@ class ProjectAST:
     """Complete AST representation of the C++ project."""
     
     project_path: Path
-    translation_units: dict[str, TranslationUnit] = field(default_factory=dict)
+    translation_unit_files: list[str] = field(default_factory=list)  # File paths that were parsed (for logging)
     functions: dict[str, Cursor] = field(default_factory=dict)  # function_name -> cursor
     cfgs: dict[str, ControlFlowGraph] = field(default_factory=dict)  # function_name -> CFG
     call_graph: list[CallRelationship] = field(default_factory=list)
@@ -168,15 +168,31 @@ class ClangASTExtractor:
         
         project_ast = ProjectAST(project_path=self.project_path)
         
-        # Parse all translation units
-        for cpp_file in cpp_files:
+        # Parse all translation units - extract data and release to save memory
+        # Batch garbage collection to balance memory usage and performance
+        import gc
+        gc_collect_interval = 50  # Collect every N files
+        
+        for i, cpp_file in enumerate(cpp_files):
+            tu = None
             try:
                 tu = self._parse_file(cpp_file)
                 if tu:
-                    project_ast.translation_units[str(cpp_file)] = tu
+                    project_ast.translation_unit_files.append(str(cpp_file))
                     self._extract_functions(tu, project_ast)
             except Exception as e:
                 logger.warning(f"Failed to parse {cpp_file}: {e}")
+            finally:
+                # Explicitly release translation unit to free memory
+                # Cursors extracted from TU remain valid after TU is released
+                if tu is not None:
+                    del tu
+                    # Periodic garbage collection to free memory (especially important on Windows)
+                    if (i + 1) % gc_collect_interval == 0:
+                        gc.collect()
+        
+        # Final garbage collection to free any remaining translation unit memory
+        gc.collect()
         
         logger.info(f"Extracted {len(project_ast.functions)} functions")
         

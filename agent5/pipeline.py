@@ -85,7 +85,7 @@ def generate_flowchart_from_project(
         if pipeline.project_ast:
             ast_context = {
                 "functions": list(pipeline.project_ast.functions.keys()),
-                "translation_units": list(pipeline.project_ast.translation_units.keys()),
+                "translation_units": pipeline.project_ast.translation_unit_files,
                 "call_graph_size": len(pipeline.project_ast.call_graph),
             }
             with open(debug_dir / "ast_context.json", "w") as f:

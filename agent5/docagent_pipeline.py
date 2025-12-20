@@ -159,7 +159,7 @@ class DocAgentPipeline:
             cpp_files=cpp_files
         )
         
-        logger.info(f"✓ Extracted AST for {len(project_ast.translation_units)} translation units")
+        logger.info(f"✓ Extracted AST for {len(project_ast.translation_unit_files)} translation units")
         logger.info(f"✓ Found {len(project_ast.functions)} functions")
         logger.info(f"✓ Built {len(project_ast.cfgs)} control flow graphs")
         logger.info(f"✓ Identified {len(project_ast.call_graph)} call relationships")
@@ -386,6 +386,7 @@ def generate_flowchart(
         detail_level=detail_level,
         use_llm_translation=use_llm_translation
     )
+
 
 
 
