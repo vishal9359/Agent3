@@ -79,6 +79,8 @@ PROJECT_EXCLUDE_DIRS = {
     "test",
     "unit-tests",
     "integration-tests",
+    "air",
+    "raft_proto",
 }
 
 # Patterns that should be excluded (checked with startswith)
