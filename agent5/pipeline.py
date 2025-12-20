@@ -52,6 +52,11 @@ def generate_flowchart_from_project(
     logger.info("V4 DOCAGENT PIPELINE")
     logger.info("=" * 80)
     logger.info(f"Project: {project_path}")
+    # Strip whitespace from entry function
+    if entry_function:
+        entry_function = entry_function.strip()
+        if not entry_function:
+            raise ValueError("Entry function name cannot be empty")
     logger.info(f"Entry function: {entry_function}")
     if entry_file:
         logger.info(f"Entry file: {entry_file}")

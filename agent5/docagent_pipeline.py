@@ -177,40 +177,94 @@ class DocAgentPipeline:
         Returns:
             Fully qualified function name
         """
-        logger.info(f"Resolving entry function: {entry_function}")
+        # Strip whitespace from function name
+        entry_function = entry_function.strip()
+        if not entry_function:
+            raise ValueError("Entry function name cannot be empty")
+        
+        logger.info(f"Resolving entry function: '{entry_function}'")
+        logger.info(f"Total functions in project: {len(self.project_ast.functions)}")
+        
+        # Resolve entry_file to absolute path for comparison
+        entry_file_resolved = None
+        if entry_file:
+            entry_file_resolved = Path(entry_file).resolve()
+            logger.info(f"Entry file (resolved): {entry_file_resolved}")
         
         # Find all matching functions
         matches = []
         for func_name in self.project_ast.functions.keys():
-            # Check for exact match
+            # Check for exact match (case-sensitive)
             if func_name == entry_function:
                 matches.append(func_name)
-            # Check if simple name matches
+            # Check if simple name matches at the end (e.g., "SomeClass::HandlerPlanner" matches "HandlerPlanner")
             elif func_name.endswith("::" + entry_function):
                 matches.append(func_name)
-            # Check if it matches anywhere
-            elif entry_function in func_name:
+            # Check if the last component (simple name) matches
+            elif func_name.split("::")[-1] == entry_function:
                 matches.append(func_name)
         
+        logger.debug(f"Found {len(matches)} case-sensitive matches for '{entry_function}'")
+        
         if not matches:
-            available = "\n".join(f"  - {name}" for name in list(self.project_ast.functions.keys())[:20])
+            # Try case-insensitive matching as fallback
+            logger.debug(f"No case-sensitive matches, trying case-insensitive for '{entry_function}'")
+            entry_lower = entry_function.lower()
+            for func_name in self.project_ast.functions.keys():
+                func_lower = func_name.lower()
+                if func_lower == entry_lower or func_lower.endswith("::" + entry_lower):
+                    matches.append(func_name)
+                elif func_name.split("::")[-1].lower() == entry_lower:
+                    matches.append(func_name)
+            logger.debug(f"Found {len(matches)} case-insensitive matches")
+        
+        if not matches:
+            available = "\n".join(f"  - {name}" for name in list(self.project_ast.functions.keys())[:50])
             raise ValueError(
                 f"Entry function '{entry_function}' not found in project.\n"
-                f"Available functions (first 20):\n{available}"
+                f"Available functions (first 50):\n{available}"
             )
         
         # If entry_file is specified, filter matches to that file
-        if entry_file:
+        if entry_file_resolved:
+            logger.info(f"Filtering {len(matches)} matches by file: {entry_file_resolved}")
             file_matches = []
             for func_name in matches:
                 func_cursor = self.project_ast.functions[func_name]
-                if func_cursor.location.file and Path(func_cursor.location.file.name) == entry_file:
-                    file_matches.append(func_name)
+                if func_cursor.location.file:
+                    # Resolve both paths for comparison
+                    cursor_file_path = Path(func_cursor.location.file.name).resolve()
+                    logger.debug(f"  Checking '{func_name}' in {cursor_file_path}")
+                    # Compare resolved paths
+                    if cursor_file_path == entry_file_resolved:
+                        file_matches.append(func_name)
+                        logger.debug(f"    → Match (exact path)")
+                    # Also try comparing just the file name (in case of path differences)
+                    elif cursor_file_path.name == entry_file_resolved.name:
+                        file_matches.append(func_name)
+                        logger.debug(f"    → Match (filename only)")
             
             if file_matches:
+                logger.info(f"Found {len(file_matches)} matches in specified file")
                 matches = file_matches
             else:
-                logger.warning(f"No functions matching '{entry_function}' found in {entry_file}")
+                logger.warning(
+                    f"No functions matching '{entry_function}' found in {entry_file_resolved}. "
+                    f"Found {len(matches)} matches in other files:"
+                )
+                # Show what files the matches are in
+                for func_name in matches[:10]:
+                    func_cursor = self.project_ast.functions[func_name]
+                    if func_cursor.location.file:
+                        logger.warning(f"  - '{func_name}' is in {func_cursor.location.file.name}")
+        
+        # If no matches found, raise error
+        if not matches:
+            available = "\n".join(f"  - {name}" for name in list(self.project_ast.functions.keys())[:50])
+            raise ValueError(
+                f"Entry function '{entry_function}' not found in project.\n"
+                f"Available functions (first 50):\n{available}"
+            )
         
         # If still ambiguous, error out
         if len(matches) > 1:
