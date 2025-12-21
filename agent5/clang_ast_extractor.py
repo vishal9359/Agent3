@@ -165,6 +165,8 @@ class ClangASTExtractor:
             cpp_files = self._discover_cpp_files()
         
         logger.info(f"Parsing {len(cpp_files)} C++ files...")
+        if len(cpp_files) == 0:
+            logger.warning("No C++ files found to parse! Check project path and exclusions.")
         
         project_ast = ProjectAST(project_path=self.project_path)
         
@@ -195,6 +197,12 @@ class ClangASTExtractor:
         gc.collect()
         
         logger.info(f"Extracted {len(project_ast.functions)} functions")
+        if len(project_ast.functions) == 0:
+            logger.warning("No functions extracted from project! This might indicate:")
+            logger.warning("  1. Files were not parsed successfully")
+            logger.warning("  2. Functions are in excluded directories")
+            logger.warning("  3. Functions are not definitions (only declarations found)")
+            logger.warning(f"  Parsed {len(project_ast.translation_unit_files)} translation units")
         
         # Build CFGs for all functions
         logger.info("Building Control Flow Graphs...")

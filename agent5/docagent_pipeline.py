@@ -185,10 +185,12 @@ class DocAgentPipeline:
         logger.info(f"Resolving entry function: '{entry_function}' (length: {len(entry_function)})")
         logger.info(f"Total functions in project: {len(self.project_ast.functions)}")
         
-        # Debug: Show first 20 function names to help diagnose
-        if logger.isEnabledFor(logging.DEBUG):
+        # Always show sample function names to help diagnose (not just debug)
+        if self.project_ast.functions:
             func_names_sample = list(self.project_ast.functions.keys())[:20]
-            logger.debug(f"Sample function names: {func_names_sample}")
+            logger.info(f"Sample function names found: {func_names_sample}")
+        else:
+            logger.warning("No functions found in project AST! This suggests parsing failed or no functions were extracted.")
         
         # Resolve entry_file to absolute path for comparison
         entry_file_resolved = None
@@ -218,10 +220,11 @@ class DocAgentPipeline:
             logger.debug(f"No case-sensitive matches, trying case-insensitive for '{entry_function}'")
             entry_lower = entry_function.lower()
             for func_name in self.project_ast.functions.keys():
-                func_lower = func_name.lower()
+                func_name_clean = func_name.strip()
+                func_lower = func_name_clean.lower()
                 if func_lower == entry_lower or func_lower.endswith("::" + entry_lower):
                     matches.append(func_name)
-                elif func_name.split("::")[-1].lower() == entry_lower:
+                elif func_name_clean.split("::")[-1].strip().lower() == entry_lower:
                     matches.append(func_name)
             logger.debug(f"Found {len(matches)} case-insensitive matches")
         
@@ -239,17 +242,36 @@ class DocAgentPipeline:
             for func_name in matches:
                 func_cursor = self.project_ast.functions[func_name]
                 if func_cursor.location.file:
-                    # Resolve both paths for comparison
-                    cursor_file_path = Path(func_cursor.location.file.name).resolve()
-                    logger.debug(f"  Checking '{func_name}' in {cursor_file_path}")
+                    # Get the file path from cursor - it might be a string or File object
+                    cursor_file_str = str(func_cursor.location.file.name)
+                    try:
+                        cursor_file_path = Path(cursor_file_str).resolve()
+                    except Exception as e:
+                        logger.warning(f"  Could not resolve path '{cursor_file_str}': {e}")
+                        # Try as-is comparison
+                        if cursor_file_str == str(entry_file_resolved):
+                            file_matches.append(func_name)
+                            logger.info(f"    → Match '{func_name}' (string comparison)")
+                        continue
+                    
+                    logger.info(f"  Checking '{func_name}' in {cursor_file_path} (entry: {entry_file_resolved})")
+                    
                     # Compare resolved paths
                     if cursor_file_path == entry_file_resolved:
                         file_matches.append(func_name)
-                        logger.debug(f"    → Match (exact path)")
+                        logger.info(f"    → Match (exact path)")
                     # Also try comparing just the file name (in case of path differences)
                     elif cursor_file_path.name == entry_file_resolved.name:
                         file_matches.append(func_name)
-                        logger.debug(f"    → Match (filename only)")
+                        logger.info(f"    → Match (filename only: {cursor_file_path.name})")
+                    # Try string comparison of resolved paths
+                    elif str(cursor_file_path) == str(entry_file_resolved):
+                        file_matches.append(func_name)
+                        logger.info(f"    → Match (string comparison)")
+                    # Try comparing without resolving (in case of symlinks)
+                    elif Path(cursor_file_str) == entry_file_resolved or Path(cursor_file_str) == Path(entry_file):
+                        file_matches.append(func_name)
+                        logger.info(f"    → Match (unresolved path)")
             
             if file_matches:
                 logger.info(f"Found {len(file_matches)} matches in specified file")
@@ -264,6 +286,51 @@ class DocAgentPipeline:
                     func_cursor = self.project_ast.functions[func_name]
                     if func_cursor.location.file:
                         logger.warning(f"  - '{func_name}' is in {func_cursor.location.file.name}")
+                
+                # Also show ALL functions in the entry file if we can find them
+                logger.info(f"Checking all functions in entry file {entry_file_resolved}:")
+                functions_in_entry_file = []
+                for func_name, func_cursor in self.project_ast.functions.items():
+                    if func_cursor.location.file:
+                        try:
+                            cursor_file_str = str(func_cursor.location.file.name)
+                            cursor_file_path = Path(cursor_file_str).resolve()
+                            if (cursor_file_path == entry_file_resolved or 
+                                cursor_file_path.name == entry_file_resolved.name or
+                                str(cursor_file_path) == str(entry_file_resolved)):
+                                functions_in_entry_file.append(func_name)
+                        except:
+                            if str(func_cursor.location.file.name) == str(entry_file_resolved):
+                                functions_in_entry_file.append(func_name)
+                
+                if functions_in_entry_file:
+                    logger.info(f"Found {len(functions_in_entry_file)} functions in entry file:")
+                    for func_name in functions_in_entry_file:
+                        logger.info(f"  - {func_name}")
+                else:
+                    logger.warning(f"No functions found in entry file {entry_file_resolved} at all!")
+                
+                # Also show ALL functions in the entry file if we can find them
+                logger.info(f"Checking all functions in entry file {entry_file_resolved}:")
+                functions_in_entry_file = []
+                for func_name, func_cursor in self.project_ast.functions.items():
+                    if func_cursor.location.file:
+                        try:
+                            cursor_file_path = Path(func_cursor.location.file.name).resolve()
+                            if (cursor_file_path == entry_file_resolved or 
+                                cursor_file_path.name == entry_file_resolved.name or
+                                str(cursor_file_path) == str(entry_file_resolved)):
+                                functions_in_entry_file.append(func_name)
+                        except:
+                            if str(func_cursor.location.file.name) == str(entry_file_resolved):
+                                functions_in_entry_file.append(func_name)
+                
+                if functions_in_entry_file:
+                    logger.info(f"Found {len(functions_in_entry_file)} functions in entry file:")
+                    for func_name in functions_in_entry_file:
+                        logger.info(f"  - {func_name}")
+                else:
+                    logger.warning(f"No functions found in entry file {entry_file_resolved} at all!")
         
         # If no matches found, raise error
         if not matches:
