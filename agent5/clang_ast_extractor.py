@@ -311,6 +311,12 @@ class ClangASTExtractor:
                 # Use centralized exclusion check
                 in_scope = is_in_project_scope(file_path, self.project_path)
                 
+                # CRITICAL FIX: If cursor is from the source file being parsed, include it
+                # even if the path check fails (handles path format differences)
+                if is_from_source and not in_scope:
+                    logger.debug(f"Including function from source file despite scope check: {file_path}")
+                    in_scope = True
+                
                 if cursor.kind == CursorKind.FUNCTION_DECL:
                     # Only include definitions, not declarations
                     if cursor.is_definition():
