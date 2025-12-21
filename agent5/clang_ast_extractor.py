@@ -265,14 +265,20 @@ class ClangASTExtractor:
                         # Only include definitions, not declarations
                         if cursor.is_definition():
                             func_name = self._get_qualified_name(cursor)
-                            project_ast.functions[func_name] = cursor
-                            logger.debug(f"Found function: {func_name}")
+                            # Ensure function name is clean (no leading/trailing whitespace)
+                            func_name = func_name.strip()
+                            if func_name:  # Only add if name is not empty
+                                project_ast.functions[func_name] = cursor
+                                logger.debug(f"Found function: '{func_name}'")
                     
                     elif cursor.kind == CursorKind.CXX_METHOD:
                         if cursor.is_definition():
                             func_name = self._get_qualified_name(cursor)
-                            project_ast.functions[func_name] = cursor
-                            logger.debug(f"Found method: {func_name}")
+                            # Ensure function name is clean (no leading/trailing whitespace)
+                            func_name = func_name.strip()
+                            if func_name:  # Only add if name is not empty
+                                project_ast.functions[func_name] = cursor
+                                logger.debug(f"Found method: '{func_name}'")
             
             # Recurse into children
             for child in cursor.get_children():
@@ -287,11 +293,21 @@ class ClangASTExtractor:
         current = cursor
         while current:
             if current.kind in (CursorKind.FUNCTION_DECL, CursorKind.CXX_METHOD):
-                parts.append(current.spelling)
+                # Strip whitespace from spelling to avoid issues
+                spelling = (current.spelling or "").strip()
+                if spelling:
+                    parts.append(spelling)
             elif current.kind in (CursorKind.CLASS_DECL, CursorKind.STRUCT_DECL, 
                                  CursorKind.NAMESPACE):
-                parts.append(current.spelling)
+                # Strip whitespace from spelling to avoid issues
+                spelling = (current.spelling or "").strip()
+                if spelling:
+                    parts.append(spelling)
             current = current.semantic_parent
+        
+        # If no parts found, fall back to cursor spelling (stripped)
+        if not parts:
+            return (cursor.spelling or "").strip()
         
         return "::".join(reversed(parts))
     

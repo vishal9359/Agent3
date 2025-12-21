@@ -182,8 +182,13 @@ class DocAgentPipeline:
         if not entry_function:
             raise ValueError("Entry function name cannot be empty")
         
-        logger.info(f"Resolving entry function: '{entry_function}'")
+        logger.info(f"Resolving entry function: '{entry_function}' (length: {len(entry_function)})")
         logger.info(f"Total functions in project: {len(self.project_ast.functions)}")
+        
+        # Debug: Show first 20 function names to help diagnose
+        if logger.isEnabledFor(logging.DEBUG):
+            func_names_sample = list(self.project_ast.functions.keys())[:20]
+            logger.debug(f"Sample function names: {func_names_sample}")
         
         # Resolve entry_file to absolute path for comparison
         entry_file_resolved = None
@@ -192,16 +197,18 @@ class DocAgentPipeline:
             logger.info(f"Entry file (resolved): {entry_file_resolved}")
         
         # Find all matching functions
+        # Also strip all function names to ensure no whitespace issues
         matches = []
         for func_name in self.project_ast.functions.keys():
+            func_name_clean = func_name.strip()
             # Check for exact match (case-sensitive)
-            if func_name == entry_function:
+            if func_name_clean == entry_function:
                 matches.append(func_name)
             # Check if simple name matches at the end (e.g., "SomeClass::HandlerPlanner" matches "HandlerPlanner")
-            elif func_name.endswith("::" + entry_function):
+            elif func_name_clean.endswith("::" + entry_function):
                 matches.append(func_name)
             # Check if the last component (simple name) matches
-            elif func_name.split("::")[-1] == entry_function:
+            elif func_name_clean.split("::")[-1].strip() == entry_function:
                 matches.append(func_name)
         
         logger.debug(f"Found {len(matches)} case-sensitive matches for '{entry_function}'")
@@ -260,11 +267,20 @@ class DocAgentPipeline:
         
         # If no matches found, raise error
         if not matches:
+            # Show all functions that contain the search term (case-insensitive) for debugging
+            similar = []
+            entry_lower = entry_function.lower()
+            for func_name in self.project_ast.functions.keys():
+                if entry_lower in func_name.lower() or func_name.lower().endswith("::" + entry_lower):
+                    similar.append(func_name)
+            
             available = "\n".join(f"  - {name}" for name in list(self.project_ast.functions.keys())[:50])
-            raise ValueError(
-                f"Entry function '{entry_function}' not found in project.\n"
-                f"Available functions (first 50):\n{available}"
-            )
+            error_msg = f"Entry function '{entry_function}' not found in project.\n"
+            if similar:
+                similar_str = "\n".join(f"  - {name}" for name in similar[:20])
+                error_msg += f"Similar function names found:\n{similar_str}\n\n"
+            error_msg += f"Available functions (first 50):\n{available}"
+            raise ValueError(error_msg)
         
         # If still ambiguous, error out
         if len(matches) > 1:
