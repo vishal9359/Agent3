@@ -178,10 +178,20 @@ class ClangASTExtractor:
         for i, cpp_file in enumerate(cpp_files):
             tu = None
             try:
+                logger.debug(f"Parsing file {i+1}/{len(cpp_files)}: {cpp_file}")
                 tu = self._parse_file(cpp_file)
                 if tu:
                     project_ast.translation_unit_files.append(str(cpp_file))
-                    self._extract_functions(tu, project_ast)
+                    functions_before = len(project_ast.functions)
+                    self._extract_functions(tu, project_ast, cpp_file)
+                    functions_after = len(project_ast.functions)
+                    functions_extracted = functions_after - functions_before
+                    if functions_extracted > 0:
+                        logger.debug(f"  Extracted {functions_extracted} functions from {cpp_file.name}")
+                    else:
+                        logger.warning(f"  No functions extracted from {cpp_file} (might be excluded or have no definitions)")
+                else:
+                    logger.warning(f"  Failed to parse {cpp_file} (returned None)")
             except Exception as e:
                 logger.warning(f"Failed to parse {cpp_file}: {e}")
             finally:
@@ -225,12 +235,19 @@ class ClangASTExtractor:
         """Discover all C++ source files in the project, enforcing project boundary."""
         extensions = {".cpp", ".cc", ".cxx", ".c++"}
         cpp_files: list[Path] = []
+        excluded_files: list[Path] = []
         
         for ext in extensions:
             for candidate in self.project_path.rglob(f"*{ext}"):
                 # Use centralized exclusion check
                 if is_in_project_scope(candidate, self.project_path):
                     cpp_files.append(candidate)
+                else:
+                    excluded_files.append(candidate)
+        
+        logger.info(f"Discovered {len(cpp_files)} C++ files to parse, excluded {len(excluded_files)} files")
+        if excluded_files:
+            logger.debug(f"Excluded files (first 10): {[str(f) for f in excluded_files[:10]]}")
         
         return sorted(cpp_files)
     
@@ -260,39 +277,81 @@ class ClangASTExtractor:
             logger.error(f"Failed to parse {file_path}: {e}")
             return None
     
-    def _extract_functions(self, tu: TranslationUnit, project_ast: ProjectAST) -> None:
-        """Extract all functions from a translation unit."""
+    def _extract_functions(self, tu: TranslationUnit, project_ast: ProjectAST, source_file: Path | None = None) -> None:
+        """Extract all functions from a translation unit.
+        
+        Args:
+            tu: Translation unit to extract from
+            project_ast: ProjectAST to add functions to
+            source_file: The source file being parsed (for logging/debugging)
+        """
+        functions_found = []
+        functions_excluded = []
         
         def visit(cursor: Cursor) -> None:
             # HARD AST BOUNDARY: Only process nodes from project files
             if cursor.location.file:
-                file_path = Path(cursor.location.file.name)
+                cursor_file_name = cursor.location.file.name
+                file_path = Path(cursor_file_name)
+                
+                # Check if this cursor is from the source file we're parsing
+                is_from_source = False
+                if source_file:
+                    try:
+                        # Try multiple comparison methods
+                        source_resolved = source_file.resolve()
+                        cursor_resolved = file_path.resolve()
+                        is_from_source = (source_resolved == cursor_resolved or 
+                                         source_file.name == file_path.name or
+                                         str(source_resolved) == str(cursor_resolved))
+                    except:
+                        is_from_source = (str(source_file) == str(file_path) or 
+                                         source_file.name == file_path.name)
+                
                 # Use centralized exclusion check
-                if is_in_project_scope(file_path, self.project_path):
-                    if cursor.kind == CursorKind.FUNCTION_DECL:
-                        # Only include definitions, not declarations
-                        if cursor.is_definition():
-                            func_name = self._get_qualified_name(cursor)
-                            # Ensure function name is clean (no leading/trailing whitespace)
-                            func_name = func_name.strip()
-                            if func_name:  # Only add if name is not empty
+                in_scope = is_in_project_scope(file_path, self.project_path)
+                
+                if cursor.kind == CursorKind.FUNCTION_DECL:
+                    # Only include definitions, not declarations
+                    if cursor.is_definition():
+                        func_name = self._get_qualified_name(cursor)
+                        func_name = func_name.strip()
+                        if func_name:
+                            if in_scope:
                                 project_ast.functions[func_name] = cursor
-                                logger.debug(f"Found function: '{func_name}'")
-                    
-                    elif cursor.kind == CursorKind.CXX_METHOD:
-                        if cursor.is_definition():
-                            func_name = self._get_qualified_name(cursor)
-                            # Ensure function name is clean (no leading/trailing whitespace)
-                            func_name = func_name.strip()
-                            if func_name:  # Only add if name is not empty
+                                functions_found.append((func_name, str(file_path), is_from_source))
+                                logger.debug(f"Found function: '{func_name}' in {file_path}")
+                            else:
+                                functions_excluded.append((func_name, str(file_path), "excluded by scope"))
+                
+                elif cursor.kind == CursorKind.CXX_METHOD:
+                    if cursor.is_definition():
+                        func_name = self._get_qualified_name(cursor)
+                        func_name = func_name.strip()
+                        if func_name:
+                            if in_scope:
                                 project_ast.functions[func_name] = cursor
-                                logger.debug(f"Found method: '{func_name}'")
+                                functions_found.append((func_name, str(file_path), is_from_source))
+                                logger.debug(f"Found method: '{func_name}' in {file_path}")
+                            else:
+                                functions_excluded.append((func_name, str(file_path), "excluded by scope"))
+                elif not in_scope and source_file and is_from_source:
+                    # Log if we're excluding something from the source file
+                    logger.debug(f"Cursor from source file excluded: {cursor.kind} at {file_path}")
             
             # Recurse into children
             for child in cursor.get_children():
                 visit(child)
         
         visit(tu.cursor)
+        
+        # Log summary for this file
+        if source_file:
+            logger.info(f"File {source_file.name}: Found {len(functions_found)} functions, excluded {len(functions_excluded)}")
+            if functions_excluded:
+                logger.warning(f"  Excluded functions from {source_file.name}:")
+                for func_name, file_path, reason in functions_excluded[:5]:
+                    logger.warning(f"    - {func_name} ({reason})")
     
     def _get_qualified_name(self, cursor: Cursor) -> str:
         """Get the fully qualified name of a function/method."""

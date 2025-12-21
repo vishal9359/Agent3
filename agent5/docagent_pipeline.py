@@ -28,6 +28,7 @@ from pathlib import Path
 
 from .bottom_up_aggregator import aggregate_semantics
 from .clang_ast_extractor import extract_ast_for_project
+from .fs_utils import is_in_project_scope
 from .leaf_semantic_extractor import extract_leaf_semantics
 from .mermaid_translator import translate_to_mermaid
 from .sfm_builder import DetailLevel, build_scenario_flow_model
@@ -151,6 +152,16 @@ class DocAgentPipeline:
         if entry_file:
             logger.info(f"Entry file specified: {entry_file}")
             logger.info("Note: Entry file is for disambiguation only. Analyzing entire project.")
+            
+            # Verify entry file exists and is in project scope
+            entry_file_path = Path(entry_file).resolve()
+            if not entry_file_path.exists():
+                logger.warning(f"Entry file does not exist: {entry_file_path}")
+            elif not is_in_project_scope(entry_file_path, self.project_path):
+                logger.warning(f"Entry file is excluded from project scope: {entry_file_path}")
+                logger.warning("This might prevent functions from the entry file from being extracted!")
+            else:
+                logger.info(f"Entry file is in project scope: {entry_file_path}")
         
         # Parse entire project
         project_ast = extract_ast_for_project(
@@ -158,6 +169,28 @@ class DocAgentPipeline:
             include_paths=self.include_paths,
             cpp_files=cpp_files
         )
+        
+        # After parsing, verify entry file was parsed
+        if entry_file:
+            entry_file_path = Path(entry_file).resolve()
+            entry_file_parsed = False
+            for parsed_file in project_ast.translation_unit_files:
+                try:
+                    parsed_path = Path(parsed_file).resolve()
+                    if parsed_path == entry_file_path or parsed_path.name == entry_file_path.name:
+                        entry_file_parsed = True
+                        logger.info(f"✓ Entry file was parsed: {parsed_path}")
+                        break
+                except:
+                    if str(parsed_file) == str(entry_file_path) or Path(parsed_file).name == entry_file_path.name:
+                        entry_file_parsed = True
+                        logger.info(f"✓ Entry file was parsed: {parsed_file}")
+                        break
+            
+            if not entry_file_parsed:
+                logger.error(f"✗ Entry file was NOT parsed: {entry_file_path}")
+                logger.error("This is why functions from the entry file are not found!")
+                logger.error("Check if the file is in an excluded directory or has parsing errors.")
         
         logger.info(f"✓ Extracted AST for {len(project_ast.translation_unit_files)} translation units")
         logger.info(f"✓ Found {len(project_ast.functions)} functions")
