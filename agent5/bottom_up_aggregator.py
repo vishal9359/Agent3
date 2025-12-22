@@ -44,6 +44,14 @@ class AggregatedSemantics:
     child_functions: List[str] = field(default_factory=list)
     dominant_operations: List[str] = field(default_factory=list)
     confidence: float = 1.0
+    
+    @property
+    def aggregated_summary(self) -> str:
+        """
+        Compatibility property: returns semantic_summary for backward compatibility.
+        Some code expects 'aggregated_summary' instead of 'semantic_summary'.
+        """
+        return self.semantic_summary
 
 
 @dataclass
