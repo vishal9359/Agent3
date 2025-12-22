@@ -49,6 +49,10 @@ class BasicBlock:
     is_entry: bool = False
     is_exit: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Compatibility attributes for leaf_semantic_extractor
+    has_condition: bool = False
+    condition_expr: str | None = None
+    is_leaf: bool = False  # True if no further function calls
 
 
 @dataclass
@@ -60,6 +64,16 @@ class ControlFlowGraph:
     entry_block: str
     exit_blocks: list[str] = field(default_factory=list)
     basic_blocks: dict[str, BasicBlock] = field(default_factory=dict)
+    file_path: str = ""  # File path where function is defined
+    is_leaf_function: bool = False  # True if function doesn't call other project functions
+    
+    @property
+    def blocks(self) -> dict[str, BasicBlock]:
+        """
+        Compatibility property: returns basic_blocks for backward compatibility.
+        Some code expects 'blocks' instead of 'basic_blocks'.
+        """
+        return self.basic_blocks
     
     def get_leaf_blocks(self) -> list[BasicBlock]:
         """Return basic blocks that don't call other functions."""
@@ -104,6 +118,14 @@ class ProjectAST:
     functions: dict[str, Cursor] = field(default_factory=dict)  # function_name -> cursor
     cfgs: dict[str, ControlFlowGraph] = field(default_factory=dict)  # function_name -> CFG
     call_graph: list[CallRelationship] = field(default_factory=list)
+    
+    @property
+    def function_cfgs(self) -> dict[str, ControlFlowGraph]:
+        """
+        Compatibility property: returns cfgs for backward compatibility.
+        Some code expects 'function_cfgs' instead of 'cfgs'.
+        """
+        return self.cfgs
     
     def get_leaf_functions(self) -> list[str]:
         """Return functions that don't call other project functions."""
@@ -508,9 +530,16 @@ class ClangASTExtractor:
         This is a simplified CFG that identifies basic blocks and their relationships.
         """
         func_name = self._get_qualified_name(function_cursor)
+        
+        # Extract file path from cursor location
+        file_path = ""
+        if function_cursor.location and function_cursor.location.file:
+            file_path = function_cursor.location.file.name
+        
         cfg = ControlFlowGraph(
             function_name=func_name,
-            function_cursor=function_cursor
+            function_cursor=function_cursor,
+            file_path=file_path
         )
         
         # Find function body

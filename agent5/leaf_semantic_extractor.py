@@ -20,7 +20,12 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Dict, List, Optional, Set
 
-from .clang_ast_parser import BasicBlock, FunctionCFG, ProjectAST
+try:
+    # Try importing from clang_ast_extractor first (used by docagent_pipeline)
+    from .clang_ast_extractor import BasicBlock, ControlFlowGraph as FunctionCFG, ProjectAST
+except ImportError:
+    # Fallback to clang_ast_parser
+    from .clang_ast_parser import BasicBlock, FunctionCFG, ProjectAST
 
 logger = logging.getLogger(__name__)
 
@@ -244,8 +249,17 @@ class LeafSemanticExtractor:
         )
         
         # Process each statement
+        # Handle both Cursor objects (from clang_ast_extractor) and strings (from clang_ast_parser)
         for stmt in block.statements:
-            action = self._classify_statement(stmt, function_name, block.id)
+            # Convert Cursor to string if needed
+            if hasattr(stmt, 'spelling') or hasattr(stmt, 'get_tokens'):
+                # It's a Cursor object, extract source text
+                stmt_str = self._cursor_to_string(stmt)
+            else:
+                # It's already a string
+                stmt_str = str(stmt)
+            
+            action = self._classify_statement(stmt_str, function_name, block.id)
             if action:
                 block_sem.actions.append(action)
         
@@ -397,6 +411,26 @@ class LeafSemanticExtractor:
             if pattern.search(stmt):
                 return True
         return False
+    
+    def _cursor_to_string(self, cursor) -> str:
+        """Convert a Cursor object to source code string."""
+        try:
+            # Try to get tokens and join them
+            tokens = list(cursor.get_tokens())
+            if tokens:
+                return " ".join(t.spelling for t in tokens)
+        except:
+            pass
+        
+        try:
+            # Fallback to spelling
+            if hasattr(cursor, 'spelling') and cursor.spelling:
+                return cursor.spelling
+        except:
+            pass
+        
+        # Last resort: string representation
+        return str(cursor)
     
     def _extract_subject(self, stmt: str) -> str:
         """Extract the subject/object of an action (simplified)."""
