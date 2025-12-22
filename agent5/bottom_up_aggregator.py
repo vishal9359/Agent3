@@ -15,7 +15,7 @@ Key principles:
 import json
 import logging
 from dataclasses import asdict, dataclass, field
-from typing import Dict, List, Optional, Set, TYPE_CHECKING
+from typing import Any, Dict, List, Optional, Set, TYPE_CHECKING
 
 # Lazy imports for LangChain - only import when actually used
 if TYPE_CHECKING:
