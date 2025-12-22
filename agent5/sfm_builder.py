@@ -216,6 +216,21 @@ class ScenarioFlowModel:
                         queue.append(neighbor)
         
         return reachable
+    
+    def filter_by_detail_level(self, detail_level: DetailLevel) -> 'ScenarioFlowModel':
+        """
+        Filter the SFM to include only nodes and edges appropriate for the requested detail level.
+        
+        Args:
+            detail_level: Requested detail level (HIGH, MEDIUM, or DEEP)
+            
+        Returns:
+            Filtered ScenarioFlowModel
+        """
+        from agent5.detail_filter import DetailLevelFilter
+        
+        filter_engine = DetailLevelFilter()
+        return filter_engine.filter_sfm(self, detail_level)
 
 
 class SFMBuilder:
