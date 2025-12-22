@@ -249,10 +249,38 @@ class V4Pipeline:
         """
         # Find all matching functions
         matches = []
+        function_name_clean = function_name.strip()
+        function_parts = function_name_clean.split("::")
         
         for qualified_name in self.analyzer.function_cfgs.keys():
-            # Check if function name matches
-            if qualified_name == function_name or qualified_name.endswith(f"::{function_name}"):
+            qualified_name_clean = qualified_name.strip()
+            qualified_parts = qualified_name_clean.split("::")
+            
+            # Improved matching logic
+            is_match = False
+            
+            # Exact match
+            if qualified_name_clean == function_name_clean:
+                is_match = True
+            # If function_name is qualified (e.g., "Manager::OnApply"), match qualified names
+            elif len(function_parts) > 1:
+                # Check if qualified name matches
+                if qualified_name_clean == function_name_clean:
+                    is_match = True
+                elif qualified_name_clean.endswith("::" + function_name_clean):
+                    is_match = True
+                # Check if last components match
+                elif len(qualified_parts) >= len(function_parts):
+                    if qualified_parts[-len(function_parts):] == function_parts:
+                        is_match = True
+            else:
+                # Simple name (e.g., "OnApply") - match at end or as last component
+                if qualified_name_clean.endswith("::" + function_name_clean):
+                    is_match = True
+                elif qualified_parts and qualified_parts[-1] == function_name_clean:
+                    is_match = True
+            
+            if is_match:
                 cfg = self.analyzer.function_cfgs[qualified_name]
                 
                 # If entry_file specified, check file match

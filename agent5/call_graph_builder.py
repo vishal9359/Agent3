@@ -416,34 +416,66 @@ def find_entry_function(
     
     Args:
         call_graph: The call graph
-        function_name: Function name to find
+        function_name: Function name to find (simple or qualified)
         file_path: Optional file path for disambiguation
         
     Returns:
         CallGraphNode or None if not found
     """
-    # Exact match
-    if function_name in call_graph.nodes:
-        return call_graph.nodes[function_name]
+    function_name_clean = function_name.strip()
+    function_parts = function_name_clean.split("::")
     
-    # Filter by file if provided
+    # Exact match
+    if function_name_clean in call_graph.nodes:
+        node = call_graph.nodes[function_name_clean]
+        if file_path is None or node.func_info.file_path == str(file_path):
+            return node
+    
+    # Improved matching logic
     candidates = []
     for node in call_graph.nodes.values():
-        if file_path:
-            if node.func_info.file_path == file_path:
-                if function_name in node.func_info.qualified_name:
-                    candidates.append(node)
+        qualified_name = node.func_info.qualified_name or node.func_info.name
+        qualified_name_clean = qualified_name.strip()
+        qualified_parts = qualified_name_clean.split("::")
+        
+        is_match = False
+        
+        # Exact match
+        if qualified_name_clean == function_name_clean:
+            is_match = True
+        # If function_name is qualified (e.g., "Manager::OnApply")
+        elif len(function_parts) > 1:
+            if qualified_name_clean == function_name_clean:
+                is_match = True
+            elif qualified_name_clean.endswith("::" + function_name_clean):
+                is_match = True
+            # Check if last components match
+            elif len(qualified_parts) >= len(function_parts):
+                if qualified_parts[-len(function_parts):] == function_parts:
+                    is_match = True
         else:
-            if function_name in node.func_info.qualified_name:
+            # Simple name (e.g., "OnApply") - match at end or as last component
+            if qualified_name_clean.endswith("::" + function_name_clean):
+                is_match = True
+            elif qualified_parts and qualified_parts[-1] == function_name_clean:
+                is_match = True
+        
+        if is_match:
+            if file_path is None or node.func_info.file_path == str(file_path):
                 candidates.append(node)
     
     if len(candidates) == 1:
         return candidates[0]
     
     if len(candidates) > 1:
-        # Prefer exact name match
+        # Prefer exact qualified name match
         for node in candidates:
-            if node.func_info.name == function_name:
+            qualified_name = node.func_info.qualified_name or node.func_info.name
+            if qualified_name.strip() == function_name_clean:
+                return node
+        # Prefer exact simple name match
+        for node in candidates:
+            if node.func_info.name == function_name_clean:
                 return node
         return candidates[0]
     

@@ -182,15 +182,71 @@ class ClangAnalyzer:
             f"{len(self.call_graph)} call relations"
         )
     
+    def _detect_actual_project_root(self) -> Path:
+        """
+        Detect the actual project root where includes like "src/..." can be resolved.
+        Similar logic to clang_ast_extractor.py
+        """
+        current = self.project_path
+        
+        # Check if current path already has a "src" directory
+        if (current / "src").exists():
+            return current
+        
+        # Walk up to find where "src" starts
+        for _ in range(10):
+            if (current / "src").exists():
+                return current
+            
+            # Check if path contains "src"
+            parts = current.parts
+            if "src" in parts:
+                src_index = parts.index("src")
+                if src_index > 0:
+                    root_path = Path(*parts[:src_index])
+                    if root_path.exists():
+                        return root_path
+            
+            parent = current.parent
+            if parent == current:
+                break
+            current = parent
+        
+        return self.project_path
+    
     def _parse_file(self, file_path: str) -> None:
         """Parse a single C++ file"""
         try:
+            # Detect actual project root for include resolution
+            actual_root = self._detect_actual_project_root()
+            
             # Parse with common C++ flags
             args = [
                 '-x', 'c++',
                 '-std=c++17',
-                '-I' + str(self.project_path),
             ]
+            
+            # Add actual project root if different
+            if actual_root != self.project_path:
+                args.append('-I' + str(actual_root))
+                logger.debug(f"Added detected project root to include paths: {actual_root}")
+            
+            # Add configured project_path
+            args.append('-I' + str(self.project_path))
+            
+            # Add parent directories up to actual root
+            current = self.project_path
+            added_paths = {actual_root, self.project_path}
+            for _ in range(5):
+                parent = current.parent
+                if parent == current:
+                    break
+                if parent not in added_paths and parent.exists():
+                    args.append('-I' + str(parent))
+                    added_paths.add(parent)
+                current = parent
+                if current == actual_root:
+                    break
             
             tu = self.index.parse(
                 file_path,
@@ -201,13 +257,22 @@ class ClangAnalyzer:
             if tu.diagnostics:
                 errors = [d for d in tu.diagnostics if d.severity >= 3]
                 if errors:
+                    error_messages = []
+                    for err in errors[:5]:
+                        error_messages.append(f"  {err.severity}: {err.spelling}")
+                        if err.location.file:
+                            error_messages[-1] += f" at {err.location.file.name}:{err.location.line}"
                     logger.warning(f"Errors parsing {file_path}: {len(errors)} errors")
+                    logger.warning("\n".join(error_messages))
+                    if len(errors) > 5:
+                        logger.warning(f"  ... and {len(errors) - 5} more errors")
             
             self.translation_units[file_path] = tu
             logger.debug(f"Parsed: {file_path}")
             
         except Exception as e:
             logger.error(f"Failed to parse {file_path}: {e}")
+            logger.error(f"  This may be due to missing include paths or syntax errors")
     
     def _build_cfgs_from_tu(self, tu: clang.TranslationUnit, file_path: str) -> None:
         """Extract all function CFGs from a translation unit"""

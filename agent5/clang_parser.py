@@ -121,14 +121,78 @@ class ClangParser:
 
         return self.context
 
+    def _detect_actual_project_root(self) -> Path:
+        """Detect the actual project root where includes like "src/..." can be resolved."""
+        current = self.project_path
+        
+        if (current / "src").exists():
+            return current
+        
+        for _ in range(10):
+            if (current / "src").exists():
+                return current
+            
+            parts = current.parts
+            if "src" in parts:
+                src_index = parts.index("src")
+                if src_index > 0:
+                    root_path = Path(*parts[:src_index])
+                    if root_path.exists():
+                        return root_path
+            
+            parent = current.parent
+            if parent == current:
+                break
+            current = parent
+        
+        return self.project_path
+    
     def _parse_file(self, file_path: Path) -> None:
         """Parse a single C++ file and extract functions."""
         args = ["-x", "c++", "-std=c++17"]
+        
+        # Detect actual project root for include resolution
+        actual_root = self._detect_actual_project_root()
+        
+        # Add actual project root if different
+        if actual_root != self.project_path:
+            args.extend(["-I", str(actual_root)])
+        
+        # Add configured project_path
+        args.extend(["-I", str(self.project_path)])
+        
+        # Add parent directories up to actual root
+        current = self.project_path
+        added_paths = {actual_root, self.project_path}
+        for _ in range(5):
+            parent = current.parent
+            if parent == current:
+                break
+            if parent not in added_paths and parent.exists():
+                args.extend(["-I", str(parent)])
+                added_paths.add(parent)
+            current = parent
+            if current == actual_root:
+                break
+        
+        # Add manually specified include paths
         for include_path in self.include_paths:
-            args.extend(["-I", str(include_path)])
+            if include_path not in added_paths:
+                args.extend(["-I", str(include_path)])
 
         try:
             tu = self.index.parse(str(file_path), args=args)
+            
+            # Check for parsing errors
+            if tu and tu.diagnostics:
+                errors = [d for d in tu.diagnostics if d.severity >= 3]
+                if errors:
+                    print(f"Warning: Parse errors in {file_path}: {len(errors)} errors")
+                    for err in errors[:3]:
+                        print(f"  Error: {err.spelling}")
+                        if err.location.file:
+                            print(f"    at {err.location.file.name}:{err.location.line}")
+            
             self.context.translation_units[str(file_path)] = tu
 
             # Extract functions from this translation unit

@@ -234,31 +234,76 @@ class DocAgentPipeline:
         # Find all matching functions
         # Also strip all function names to ensure no whitespace issues
         matches = []
+        entry_function_clean = entry_function.strip()
+        
         for func_name in self.project_ast.functions.keys():
             func_name_clean = func_name.strip()
+            
             # Check for exact match (case-sensitive)
-            if func_name_clean == entry_function:
+            if func_name_clean == entry_function_clean:
                 matches.append(func_name)
-            # Check if simple name matches at the end (e.g., "SomeClass::HandlerPlanner" matches "HandlerPlanner")
-            elif func_name_clean.endswith("::" + entry_function):
-                matches.append(func_name)
-            # Check if the last component (simple name) matches
-            elif func_name_clean.split("::")[-1].strip() == entry_function:
-                matches.append(func_name)
+                continue
+            
+            # Split into components for better matching
+            func_parts = func_name_clean.split("::")
+            entry_parts = entry_function_clean.split("::")
+            
+            # If entry_function is qualified (e.g., "Manager::OnApply"), match qualified names
+            if len(entry_parts) > 1:
+                # Check if qualified name matches (full or partial)
+                if func_name_clean == entry_function_clean:
+                    matches.append(func_name)
+                elif func_name_clean.endswith("::" + entry_function_clean):
+                    matches.append(func_name)
+                # Also check if last components match
+                elif len(func_parts) >= len(entry_parts):
+                    if func_parts[-len(entry_parts):] == entry_parts:
+                        matches.append(func_name)
+            else:
+                # Entry function is simple name (e.g., "OnApply")
+                # Match against simple name at end (e.g., "Manager::OnApply" matches "OnApply")
+                if func_name_clean.endswith("::" + entry_function_clean):
+                    matches.append(func_name)
+                # Check if the last component (simple name) matches
+                elif func_parts and func_parts[-1].strip() == entry_function_clean:
+                    matches.append(func_name)
+                # Also check if entry_function matches anywhere in qualified name (for flexibility)
+                elif entry_function_clean in func_parts:
+                    # Only add if it's likely a match (to avoid false positives)
+                    # Prefer matches where it's at the end or the function name part
+                    if func_parts[-1] == entry_function_clean or entry_function_clean == func_name_clean.split("::")[-1]:
+                        matches.append(func_name)
         
         logger.debug(f"Found {len(matches)} case-sensitive matches for '{entry_function}'")
         
         if not matches:
             # Try case-insensitive matching as fallback
             logger.debug(f"No case-sensitive matches, trying case-insensitive for '{entry_function}'")
-            entry_lower = entry_function.lower()
+            entry_lower = entry_function_clean.lower()
+            entry_parts_lower = entry_lower.split("::")
+            
             for func_name in self.project_ast.functions.keys():
                 func_name_clean = func_name.strip()
                 func_lower = func_name_clean.lower()
-                if func_lower == entry_lower or func_lower.endswith("::" + entry_lower):
+                func_parts_lower = func_lower.split("::")
+                
+                # Similar logic as case-sensitive, but case-insensitive
+                if func_lower == entry_lower:
                     matches.append(func_name)
-                elif func_name_clean.split("::")[-1].strip().lower() == entry_lower:
-                    matches.append(func_name)
+                elif len(entry_parts_lower) > 1:
+                    # Qualified entry function - match qualified
+                    if func_lower.endswith("::" + entry_lower):
+                        matches.append(func_name)
+                    elif len(func_parts_lower) >= len(entry_parts_lower):
+                        if func_parts_lower[-len(entry_parts_lower):] == entry_parts_lower:
+                            matches.append(func_name)
+                else:
+                    # Simple name - match at end
+                    if func_lower.endswith("::" + entry_lower):
+                        matches.append(func_name)
+                    elif func_parts_lower and func_parts_lower[-1] == entry_lower:
+                        matches.append(func_name)
+            
             logger.debug(f"Found {len(matches)} case-insensitive matches")
         
         if not matches:

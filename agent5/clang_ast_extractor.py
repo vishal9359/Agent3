@@ -251,13 +251,117 @@ class ClangASTExtractor:
         
         return sorted(cpp_files)
     
+    def _detect_actual_project_root(self, file_path: Path) -> Path:
+        """
+        Detect the actual project root where includes like "src/..." can be resolved.
+        
+        When project_path is a subdirectory like /path/to/project/src/module/submodule,
+        but files include headers like "src/module/header.h", we need to find where
+        the "src/" directory actually starts.
+        
+        Args:
+            file_path: The file being parsed (for context)
+            
+        Returns:
+            Path to the actual project root (where "src/" or similar starts)
+        """
+        # Start from the configured project_path
+        current = self.project_path
+        
+        # Check if current path already has a "src" directory
+        if (current / "src").exists():
+            return current
+        
+        # Walk up the directory tree to find where "src" starts
+        # This handles cases where project_path is a subdirectory
+        search_limit = 10  # Prevent infinite loops
+        for _ in range(search_limit):
+            # Check if this directory or parent contains "src"
+            if (current / "src").exists():
+                logger.debug(f"Detected actual project root: {current} (contains 'src/')")
+                return current
+            
+            # Also check parent for "src"
+            parent = current.parent
+            if parent != current and (parent / "src").exists():
+                logger.debug(f"Detected actual project root: {parent} (parent contains 'src/')")
+                return parent
+            
+            # Also check if current path looks like it's inside a "src" directory
+            # e.g., if path is /home/user/project/src/module/submodule
+            # and we're looking for where "src" starts, we should find /home/user/project
+            parts = current.parts
+            if "src" in parts:
+                # Find the index of "src" and go one level above it
+                src_index = parts.index("src")
+                if src_index > 0:
+                    root_path = Path(*parts[:src_index])
+                    if root_path.exists():
+                        logger.debug(f"Detected actual project root: {root_path} (path contains 'src/')")
+                        return root_path
+            
+            # Move up one level
+            if parent == current:
+                break
+            current = parent
+        
+        # If we couldn't find "src", return the configured project_path
+        # But also check parent directories as potential roots
+        potential_root = self.project_path
+        for _ in range(5):  # Check up to 5 levels up
+            if potential_root.exists():
+                # Check if any file in this directory has includes that suggest this might be root
+                try:
+                    # Just return the original project_path if we can't determine
+                    return self.project_path
+                except:
+                    pass
+            potential_root = potential_root.parent
+            if potential_root == potential_root.parent:
+                break
+        
+        logger.debug(f"Using configured project_path as root: {self.project_path}")
+        return self.project_path
+    
     def _parse_file(self, file_path: Path) -> TranslationUnit | None:
         """Parse a single C++ file into a translation unit."""
         args = ["-std=c++17"]
         
-        # Add include paths
+        # Detect actual project root for include resolution
+        # This handles cases where project_path is a subdirectory but includes
+        # reference paths relative to the actual root (e.g., "src/module/header.h")
+        actual_root = self._detect_actual_project_root(file_path)
+        
+        # Add actual project root to include paths first (highest priority)
+        if actual_root not in self.include_paths and actual_root != self.project_path:
+            args.append(f"-I{actual_root}")
+            logger.debug(f"Added detected project root to include paths: {actual_root}")
+        
+        # Add configured project_path to include paths
+        args.append(f"-I{self.project_path}")
+        
+        # Add parent directories up to actual root as include paths
+        # This helps resolve includes like "src/dara/module1/mgr.h"
+        current = self.project_path
+        added_paths = {actual_root, self.project_path}
+        for _ in range(5):  # Check up to 5 levels up
+            parent = current.parent
+            if parent == current:
+                break
+            if parent not in added_paths and parent.exists():
+                # Check if going up would help (e.g., if we're in submodule1 and parent is module1)
+                if str(parent) not in [str(p) for p in self.include_paths]:
+                    args.append(f"-I{parent}")
+                    added_paths.add(parent)
+                    logger.debug(f"Added parent directory to include paths: {parent}")
+            current = parent
+            if current == actual_root:
+                break
+        
+        # Add manually specified include paths
         for include_path in self.include_paths:
-            args.append(f"-I{include_path}")
+            if include_path not in added_paths:
+                args.append(f"-I{include_path}")
         
         try:
             tu = self.index.parse(
@@ -270,11 +374,24 @@ class ClangASTExtractor:
             if tu.diagnostics:
                 errors = [d for d in tu.diagnostics if d.severity >= 3]
                 if errors:
+                    error_messages = []
+                    for err in errors[:5]:  # Show first 5 errors
+                        error_messages.append(f"  {err.severity}: {err.spelling}")
+                        if err.location.file:
+                            error_messages[-1] += f" at {err.location.file.name}:{err.location.line}"
                     logger.warning(f"Parse errors in {file_path}: {len(errors)} errors")
+                    logger.warning("\n".join(error_messages))
+                    if len(errors) > 5:
+                        logger.warning(f"  ... and {len(errors) - 5} more errors")
+                else:
+                    warnings = [d for d in tu.diagnostics if d.severity < 3]
+                    if warnings:
+                        logger.debug(f"Parse warnings in {file_path}: {len(warnings)} warnings")
             
             return tu
         except Exception as e:
             logger.error(f"Failed to parse {file_path}: {e}")
+            logger.error(f"  Include paths used: {args[1:]}")  # Skip '-std=c++17'
             return None
     
     def _extract_functions(self, tu: TranslationUnit, project_ast: ProjectAST, source_file: Path | None = None) -> None:

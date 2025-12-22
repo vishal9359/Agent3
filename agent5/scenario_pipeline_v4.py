@@ -126,20 +126,48 @@ def _resolve_entry_function(
     - If only function_name: must be unambiguous
     - Returns qualified function name or None
     """
+    function_name_clean = function_name.strip()
+    function_parts = function_name_clean.split("::")
+    
     # Try exact match first
-    if function_name in project_ast.functions:
+    if function_name_clean in project_ast.functions:
         # Check file constraint if provided
         if file_path:
-            func_info = project_ast.functions[function_name]
+            func_info = project_ast.functions[function_name_clean]
             if func_info.file_path == str(file_path):
-                return function_name
+                return function_name_clean
         else:
-            return function_name
+            return function_name_clean
     
-    # Try partial match (contains function_name)
+    # Improved matching logic
     matches = []
     for qualified_name, func_info in project_ast.functions.items():
-        if function_name in qualified_name:
+        qualified_name_clean = qualified_name.strip()
+        qualified_parts = qualified_name_clean.split("::")
+        
+        is_match = False
+        
+        # Exact match
+        if qualified_name_clean == function_name_clean:
+            is_match = True
+        # If function_name is qualified (e.g., "Manager::OnApply")
+        elif len(function_parts) > 1:
+            if qualified_name_clean == function_name_clean:
+                is_match = True
+            elif qualified_name_clean.endswith("::" + function_name_clean):
+                is_match = True
+            # Check if last components match
+            elif len(qualified_parts) >= len(function_parts):
+                if qualified_parts[-len(function_parts):] == function_parts:
+                    is_match = True
+        else:
+            # Simple name (e.g., "OnApply") - match at end or as last component
+            if qualified_name_clean.endswith("::" + function_name_clean):
+                is_match = True
+            elif qualified_parts and qualified_parts[-1] == function_name_clean:
+                is_match = True
+        
+        if is_match:
             if file_path is None or func_info.file_path == str(file_path):
                 matches.append(qualified_name)
     
