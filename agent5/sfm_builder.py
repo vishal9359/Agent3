@@ -11,7 +11,7 @@ SFM Properties:
 - Deterministic structure
 """
 
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 from dataclasses import dataclass, field
 from enum import Enum
 import json
@@ -125,6 +125,97 @@ class ScenarioFlowModel:
     def to_json(self, indent: int = 2) -> str:
         """Convert to JSON string"""
         return json.dumps(self.to_dict(), indent=indent)
+    
+    @property
+    def start_node_id(self) -> Optional[str]:
+        """Get the start node ID (compatibility property)"""
+        for node in self.nodes:
+            if node.node_type == SFMNodeType.START:
+                return node.id
+        return None
+    
+    @property
+    def end_node_ids(self) -> List[str]:
+        """Get all end node IDs (compatibility property)"""
+        return [node.id for node in self.nodes if node.node_type == SFMNodeType.END]
+    
+    @property
+    def start_node(self) -> Optional[str]:
+        """Get the start node ID (compatibility property, alias for start_node_id)"""
+        return self.start_node_id
+    
+    @property
+    def end_nodes(self) -> List[str]:
+        """Get all end node IDs (compatibility property, alias for end_node_ids)"""
+        return self.end_node_ids
+    
+    def validate(self) -> Tuple[bool, List[str]]:
+        """
+        Validate the SFM for completeness and consistency.
+        
+        Returns:
+            Tuple of (is_valid, errors_list)
+        """
+        errors = []
+        
+        # Check for start node
+        start_nodes = [node for node in self.nodes if node.node_type == SFMNodeType.START]
+        if len(start_nodes) == 0:
+            errors.append("No start node found")
+        elif len(start_nodes) > 1:
+            errors.append(f"Multiple start nodes found: {[n.id for n in start_nodes]}")
+        
+        # Check for end nodes
+        end_nodes = [node for node in self.nodes if node.node_type == SFMNodeType.END]
+        if len(end_nodes) == 0:
+            errors.append("No end nodes found")
+        
+        # Check that all edge references are valid
+        node_ids = {node.id for node in self.nodes}
+        for edge in self.edges:
+            if edge.from_node not in node_ids:
+                errors.append(f"Edge references non-existent from_node: {edge.from_node}")
+            if edge.to_node not in node_ids:
+                errors.append(f"Edge references non-existent to_node: {edge.to_node}")
+        
+        # Check that all paths from start can reach an end node
+        if start_nodes:
+            start_id = start_nodes[0].id
+            reachable = self._find_reachable_nodes(start_id, node_ids)
+            end_ids = {node.id for node in end_nodes}
+            if not reachable.intersection(end_ids):
+                errors.append("No path from start node to any end node")
+        
+        is_valid = len(errors) == 0
+        return (is_valid, errors)
+    
+    def _find_reachable_nodes(self, start_id: str, node_ids: set[str]) -> set[str]:
+        """Find all nodes reachable from start_id using BFS"""
+        reachable = set()
+        queue = [start_id]
+        visited = set()
+        
+        # Build adjacency list from edges
+        adj_list: Dict[str, List[str]] = {node_id: [] for node_id in node_ids}
+        for edge in self.edges:
+            if edge.from_node in adj_list:
+                adj_list[edge.from_node].append(edge.to_node)
+        
+        while queue:
+            current = queue.pop(0)
+            if current in visited or current not in node_ids:
+                continue
+            
+            visited.add(current)
+            reachable.add(current)
+            
+            # Add neighbors to queue
+            if current in adj_list:
+                for neighbor in adj_list[current]:
+                    if neighbor not in visited:
+                        queue.append(neighbor)
+        
+        return reachable
 
 
 class SFMBuilder:
