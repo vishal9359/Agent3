@@ -189,7 +189,7 @@ class ScenarioFlowModel:
         is_valid = len(errors) == 0
         return (is_valid, errors)
     
-    def _find_reachable_nodes(self, start_id: str, node_ids: set[str]) -> set[str]:
+    def _find_reachable_nodes(self, start_id: str, node_ids: Set[str]) -> Set[str]:
         """Find all nodes reachable from start_id using BFS"""
         reachable = set()
         queue = [start_id]
