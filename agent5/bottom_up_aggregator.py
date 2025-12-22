@@ -44,6 +44,9 @@ class AggregatedSemantics:
     child_functions: List[str] = field(default_factory=list)
     dominant_operations: List[str] = field(default_factory=list)
     confidence: float = 1.0
+    # Internal storage for compatibility attributes
+    _local_actions: List[Any] = field(default_factory=list, repr=False)  # Store actions for compatibility
+    _child_summaries_dict: Dict[str, str] = field(default_factory=dict, repr=False)  # Store child summaries
     
     @property
     def aggregated_summary(self) -> str:
@@ -52,6 +55,38 @@ class AggregatedSemantics:
         Some code expects 'aggregated_summary' instead of 'semantic_summary'.
         """
         return self.semantic_summary
+    
+    @property
+    def local_actions(self) -> List[Any]:
+        """
+        Compatibility property: returns local_actions for backward compatibility.
+        Some code expects 'local_actions' attribute.
+        """
+        return self._local_actions
+    
+    @property
+    def is_leaf(self) -> bool:
+        """
+        Compatibility property: returns True if level is 0 (leaf function).
+        Some code expects 'is_leaf' attribute.
+        """
+        return self.level == 0
+    
+    @property
+    def child_summaries(self) -> Dict[str, str]:
+        """
+        Compatibility property: returns child_summaries dict for backward compatibility.
+        Maps child function names to their summaries.
+        """
+        return self._child_summaries_dict
+    
+    @property
+    def critical_operations(self) -> List[str]:
+        """
+        Compatibility property: returns dominant_operations as critical_operations.
+        Some code expects 'critical_operations' attribute.
+        """
+        return self.dominant_operations
 
 
 @dataclass
@@ -280,12 +315,20 @@ class BottomUpAggregator:
         leaf_sem = context.leaf_semantics
         
         if not leaf_sem:
+            # Build child summaries dict from child_summaries
+            child_summaries_dict = {}
+            if context.child_summaries:
+                for child in context.child_summaries:
+                    child_summaries_dict[child.function_name] = child.semantic_summary
+            
             return AggregatedSemantics(
                 function_name=context.function_name,
                 level=level,
                 semantic_summary="No semantic information available",
                 control_flow_summary="Unknown control flow",
                 state_impact_summary="Unknown state impact",
+                _local_actions=[],  # Empty actions for compatibility
+                _child_summaries_dict=child_summaries_dict,  # Store child summaries for compatibility
             )
         
         # Collect actions
@@ -333,6 +376,12 @@ class BottomUpAggregator:
         # Extract dominant operations
         dominant_ops = list(set([a.effect for a in significant_actions[:5]]))
         
+        # Build child summaries dict from child_summaries
+        child_summaries_dict = {}
+        if context.child_summaries:
+            for child in context.child_summaries:
+                child_summaries_dict[child.function_name] = child.semantic_summary
+        
         return AggregatedSemantics(
             function_name=context.function_name,
             level=level,
@@ -341,6 +390,8 @@ class BottomUpAggregator:
             state_impact_summary=state_impact_summary,
             dominant_operations=dominant_ops,
             confidence=0.8,
+            _local_actions=significant_actions,  # Store actions for compatibility
+            _child_summaries_dict=child_summaries_dict,  # Store child summaries for compatibility
         )
     
     def _llm_aggregate(
@@ -479,6 +530,8 @@ Keep summaries concise (1-2 sentences each).
                     state_impact_summary=data.get("state_impact_summary", ""),
                     dominant_operations=data.get("dominant_operations", []),
                     confidence=0.9,
+                    _local_actions=[],  # Will be populated by caller
+                    _child_summaries_dict={},  # Will be populated by caller
                 )
             else:
                 raise ValueError("No JSON found in response")
@@ -493,6 +546,8 @@ Keep summaries concise (1-2 sentences each).
                 control_flow_summary="See summary",
                 state_impact_summary="See summary",
                 confidence=0.5,
+                _local_actions=[],  # Will be populated by caller
+                _child_summaries_dict={},  # Will be populated by caller
             )
     
     def get_entry_summary(self, entry_function: str) -> Optional[AggregatedSemantics]:
