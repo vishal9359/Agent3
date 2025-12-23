@@ -421,8 +421,38 @@ class BottomUpAggregator:
             aggregated = self._parse_llm_response(
                 summary_text, context.function_name, level
             )
-            
-            # Add child functions
+            # Enrich aggregated semantics with concrete actions and child summaries
+            # so that downstream SFM construction has structured data to work with.
+
+            # 1) Populate _local_actions from leaf semantics (significant actions only)
+            significant_actions: List[Any] = []
+            if context.leaf_semantics:
+                all_actions: List[Any] = []
+                for block_sem in context.leaf_semantics.blocks.values():
+                    all_actions.extend(getattr(block_sem, "actions", []))
+                
+                # Filter out logging/metrics/utility actions if they exist on this enum
+                for action in all_actions:
+                    atype = getattr(action, "action_type", None)
+                    if atype is None:
+                        continue
+                    # Compare by name to stay robust across different SemanticActionType enums
+                    atype_name = getattr(atype, "name", str(atype))
+                    if atype_name in {"LOGGING", "METRIC", "UTILITY"}:
+                        continue
+                    significant_actions.append(action)
+
+            aggregated._local_actions = significant_actions
+
+            # 2) Populate _child_summaries_dict from child_summaries
+            child_summaries_dict: Dict[str, str] = {}
+            if context.child_summaries:
+                for child in context.child_summaries:
+                    # child is AggregatedSemantics
+                    child_summaries_dict[child.function_name] = child.semantic_summary
+            aggregated._child_summaries_dict = child_summaries_dict
+
+            # 3) Maintain explicit child_functions list for compatibility
             aggregated.child_functions = [cs.function_name for cs in context.child_summaries]
             
             return aggregated
