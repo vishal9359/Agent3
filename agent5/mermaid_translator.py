@@ -111,9 +111,8 @@ For decisions, use |Yes| and |No| labels on branches."""
             response = self.llm.invoke(messages)
             mermaid_code = response.content.strip()
             
-            # Validate it starts with flowchart declaration
-            if not mermaid_code.startswith('flowchart'):
-                mermaid_code = 'flowchart TD\n' + mermaid_code
+            # Clean up LLM output
+            mermaid_code = self._clean_llm_output(mermaid_code)
             
             logger.info(f"LLM translation successful ({len(mermaid_code)} chars)")
             return mermaid_code
@@ -123,34 +122,146 @@ For decisions, use |Yes| and |No| labels on branches."""
             logger.info("Falling back to deterministic translation")
             return self._translate_deterministic(sfm)
     
+    def _clean_llm_output(self, mermaid_code: str) -> str:
+        """Clean and validate LLM-generated Mermaid code"""
+        lines = mermaid_code.split('\n')
+        cleaned_lines = []
+        in_code_block = False
+        found_flowchart = False
+        
+        for line in lines:
+            # Remove code block markers
+            if '```' in line:
+                if 'mermaid' in line.lower():
+                    in_code_block = True
+                elif in_code_block:
+                    in_code_block = False
+                continue
+            
+            # Skip empty lines at start
+            if not cleaned_lines and not line.strip():
+                continue
+            
+            # Check for flowchart declaration
+            if 'flowchart' in line.lower() and 'td' in line.lower():
+                if found_flowchart:
+                    # Skip duplicate flowchart declarations
+                    continue
+                found_flowchart = True
+                # Ensure proper format
+                if not line.strip().startswith('flowchart'):
+                    line = 'flowchart TD'
+                cleaned_lines.append(line)
+                continue
+            
+            # Add lines that look like Mermaid syntax
+            line_stripped = line.strip()
+            if (in_code_block or 
+                found_flowchart or 
+                line_stripped.startswith(('START', 'END', 'PROCESS', 'N', 'D', 'V', 'E')) or
+                '-->' in line or
+                '([[' in line or '[[' in line or '{{' in line or '[' in line):
+                # Fix common syntax errors
+                # Fix PROCESS node without brackets: "PROCESS text" -> "PROCESS[text]"
+                if line_stripped.startswith('PROCESS ') and '[' not in line_stripped and '-->' not in line_stripped:
+                    parts = line_stripped.split(' ', 1)
+                    if len(parts) == 2:
+                        # Preserve indentation
+                        indent = len(line) - len(line.lstrip())
+                        line_stripped = f"{parts[0]}[{parts[1]}]"
+                        line = ' ' * indent + line_stripped
+                
+                # Fix any node ID followed by text without brackets
+                # Pattern: "NODEID text" -> "NODEID[text]"
+                if '-->' not in line_stripped and '[' not in line_stripped and '{' not in line_stripped:
+                    # Check if it looks like a node definition (starts with alphanumeric, has space, then text)
+                    import re
+                    match = re.match(r'^([A-Z0-9_]+)\s+(.+)$', line_stripped)
+                    if match:
+                        node_id, label = match.groups()
+                        # Only fix if it looks like a valid node ID (uppercase or starts with N)
+                        if node_id.isupper() or node_id.startswith('N'):
+                            indent = len(line) - len(line.lstrip())
+                            line = ' ' * indent + f"{node_id}[{label}]"
+                
+                cleaned_lines.append(line)
+        
+        # If no flowchart declaration found, add it
+        if not found_flowchart:
+            cleaned_lines.insert(0, 'flowchart TD')
+        
+        result = '\n'.join(cleaned_lines)
+        
+        # Final validation: ensure it starts with flowchart
+        if not result.strip().startswith('flowchart'):
+            result = 'flowchart TD\n' + result
+        
+        return result
+    
     def _translate_deterministic(self, sfm: ScenarioFlowModel) -> str:
         """Deterministic rule-based translation"""
         lines = ['flowchart TD']
         
+        # Build node ID mapping to ensure valid Mermaid IDs
+        node_id_map = {}
+        node_counter = 0
+        used_ids = set()
+        
+        # First pass: create valid node IDs
+        for node_id, node in sfm.nodes.items():
+            if node.node_type == SFMNodeType.START:
+                mapped_id = 'START'
+            elif node.node_type == SFMNodeType.END:
+                mapped_id = 'END'
+            else:
+                sanitized = self._sanitize_id(node_id)
+                # Ensure unique IDs
+                while sanitized in used_ids:
+                    sanitized = f'N{node_counter}'
+                    node_counter += 1
+                mapped_id = sanitized
+            
+            node_id_map[node_id] = mapped_id
+            used_ids.add(mapped_id)
+        
         # Track processed nodes to avoid duplicates
         processed = set()
         
-        # Process nodes in order
+        # Process nodes in order (start first, then others, then end)
+        node_order = []
         for node_id, node in sfm.nodes.items():
+            if node.node_type == SFMNodeType.START:
+                node_order.insert(0, (node_id, node))
+            elif node.node_type == SFMNodeType.END:
+                node_order.append((node_id, node))
+            else:
+                node_order.append((node_id, node))
+        
+        for node_id, node in node_order:
             if node_id in processed:
                 continue
             
-            # Generate node definition
-            node_def = self._generate_node_definition(node)
+            # Generate node definition with mapped ID
+            mermaid_id = node_id_map[node_id]
+            node_def = self._generate_node_definition(node, mermaid_id)
             lines.append(f"    {node_def}")
             processed.add(node_id)
-            
-            # Generate edges
-            edge_lines = self._generate_edges(node, sfm.nodes)
+        
+        # Generate edges using mapped IDs
+        for node_id, node in sfm.nodes.items():
+            edge_lines = self._generate_edges(node, sfm.nodes, node_id_map)
             lines.extend([f"    {line}" for line in edge_lines])
         
         mermaid_code = '\n'.join(lines)
         logger.info(f"Deterministic translation successful ({len(mermaid_code)} chars)")
         return mermaid_code
     
-    def _generate_node_definition(self, node: SFMNode) -> str:
+    def _generate_node_definition(self, node: SFMNode, mermaid_id: str = None) -> str:
         """Generate Mermaid node definition"""
-        node_id = self._sanitize_id(node.id)
+        if mermaid_id is None:
+            node_id = self._sanitize_id(node.id)
+        else:
+            node_id = mermaid_id
         label = self._sanitize_label(node.label)
         
         # Choose shape based on node type
@@ -167,19 +278,30 @@ For decisions, use |Yes| and |No| labels on branches."""
         else:  # PROCESS
             return f"{node_id}[{label}]"
     
-    def _generate_edges(self, node: SFMNode, all_nodes: Dict[str, SFMNode]) -> List[str]:
+    def _generate_edges(self, node: SFMNode, all_nodes: Dict[str, SFMNode], node_id_map: Dict[str, str] = None) -> List[str]:
         """Generate edges from a node"""
         edges = []
-        node_id = self._sanitize_id(node.id)
+        
+        # Get node ID from map if provided, otherwise sanitize
+        if node_id_map:
+            node_id = node_id_map.get(node.id, self._sanitize_id(node.id))
+        else:
+            node_id = self._sanitize_id(node.id)
         
         # Handle decision branches
         if node.node_type == SFMNodeType.DECISION:
             if node.true_branch:
-                true_id = self._sanitize_id(node.true_branch)
+                if node_id_map and node.true_branch in node_id_map:
+                    true_id = node_id_map[node.true_branch]
+                else:
+                    true_id = self._sanitize_id(node.true_branch)
                 edges.append(f"{node_id} -->|Yes| {true_id}")
             
             if node.false_branch:
-                false_id = self._sanitize_id(node.false_branch)
+                if node_id_map and node.false_branch in node_id_map:
+                    false_id = node_id_map[node.false_branch]
+                else:
+                    false_id = self._sanitize_id(node.false_branch)
                 edges.append(f"{node_id} -->|No| {false_id}")
         
         # Handle regular next nodes
@@ -188,7 +310,10 @@ For decisions, use |Yes| and |No| labels on branches."""
             if next_id in [node.true_branch, node.false_branch]:
                 continue
             
-            next_id_clean = self._sanitize_id(next_id)
+            if node_id_map and next_id in node_id_map:
+                next_id_clean = node_id_map[next_id]
+            else:
+                next_id_clean = self._sanitize_id(next_id)
             edges.append(f"{node_id} --> {next_id_clean}")
         
         return edges
@@ -196,7 +321,16 @@ For decisions, use |Yes| and |No| labels on branches."""
     def _sanitize_id(self, node_id: str) -> str:
         """Sanitize node ID for Mermaid"""
         # Replace invalid characters
-        return node_id.replace('-', '_').replace(' ', '_')
+        sanitized = node_id.replace('-', '_').replace(' ', '_').replace('::', '_')
+        # Remove special characters that might cause issues
+        sanitized = ''.join(c if c.isalnum() or c == '_' else '_' for c in sanitized)
+        # Ensure it doesn't start with a number
+        if sanitized and sanitized[0].isdigit():
+            sanitized = 'N' + sanitized
+        # Ensure it's not empty
+        if not sanitized:
+            sanitized = 'NODE'
+        return sanitized
     
     def _sanitize_label(self, label: str) -> str:
         """Sanitize label text for Mermaid"""
