@@ -335,7 +335,9 @@ Respond in JSON format:
                 complexity=summary_data.get("complexity", "simple"),
                 criticality=summary_data.get("criticality", "normal")
             )
-            
+            # Enrich/repair summary from concrete actions if LLM output is sparse
+            self._enrich_summary_from_actions(summary, actions)
+
             return summary
             
         except Exception as e:
@@ -399,13 +401,100 @@ Respond in JSON format:
                 complexity=summary_data.get("complexity", "moderate"),
                 criticality=summary_data.get("criticality", "normal")
             )
-            
+            # Enrich/repair summary from concrete actions if LLM output is sparse
+            self._enrich_summary_from_actions(summary, actions)
+
             return summary
             
         except Exception as e:
             logger.error(f"LLM aggregation failed for {cfg.qualified_name}: {e}")
             # Fallback: combine actions and child summaries naively
             return self._create_fallback_summary(cfg, actions, is_leaf=False, child_summaries=child_summaries)
+    
+    def _enrich_summary_from_actions(
+        self,
+        summary: FunctionSemanticSummary,
+        actions: List[SemanticAction],
+    ) -> None:
+        """
+        Ensure summary has enough structure by deriving fields from concrete actions.
+        
+        This is critical when the LLM returns very sparse JSON (e.g. empty lists) even
+        though we have rich SemanticAction data. We **only** fill fields that are
+        currently empty, so any non-empty LLM output is preserved.
+        """
+        if not actions:
+            return
+
+        # If LLM already populated these lists, don't override them.
+        needs_pre = not summary.preconditions
+        needs_post = not summary.postconditions
+        needs_decisions = not summary.decision_points
+        needs_early = not summary.early_exits
+        needs_errors = not summary.error_conditions
+        needs_state = not summary.state_mutations
+        needs_side = not summary.side_effects
+
+        if not any(
+            [
+                needs_pre,
+                needs_post,
+                needs_decisions,
+                needs_early,
+                needs_errors,
+                needs_state,
+                needs_side,
+            ]
+        ):
+            # Nothing to do – LLM already produced a rich summary
+            return
+
+        for action in actions:
+            atype = action.action_type
+            effect = action.effect
+
+            # Validation / permission checks → preconditions + decisions
+            if atype in (
+                SemanticActionType.VALIDATION,
+                SemanticActionType.PERMISSION_CHECK,
+            ):
+                if needs_pre:
+                    summary.preconditions.append(effect)
+                if needs_decisions:
+                    summary.decision_points.append(effect)
+
+            # State mutation → state_mutations (+ postconditions as a coarse proxy)
+            if atype == SemanticActionType.STATE_MUTATION:
+                if needs_state:
+                    summary.state_mutations.append(effect)
+                if needs_post:
+                    summary.postconditions.append(effect)
+
+            # Side effects → side_effects
+            if atype == SemanticActionType.SIDE_EFFECT:
+                if needs_side:
+                    summary.side_effects.append(effect)
+
+            # Early exits → early_exits (and sometimes error_conditions)
+            if atype == SemanticActionType.EARLY_EXIT:
+                if needs_early:
+                    summary.early_exits.append(effect)
+                if action.is_error_path and needs_errors:
+                    summary.error_conditions.append(effect)
+
+            # Error handling → error_conditions
+            if atype == SemanticActionType.ERROR_HANDLING:
+                if needs_errors:
+                    summary.error_conditions.append(effect)
+
+        # Truncate to keep SFM readable
+        summary.preconditions = summary.preconditions[:5]
+        summary.postconditions = summary.postconditions[:5]
+        summary.decision_points = summary.decision_points[:5]
+        summary.early_exits = summary.early_exits[:5]
+        summary.error_conditions = summary.error_conditions[:5]
+        summary.state_mutations = summary.state_mutations[:5]
+        summary.side_effects = summary.side_effects[:5]
     
     def _format_actions(self, actions: List[SemanticAction]) -> str:
         """Format semantic actions for LLM consumption"""
