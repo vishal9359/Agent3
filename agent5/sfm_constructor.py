@@ -161,6 +161,151 @@ class ScenarioFlowModel:
                     queue.append(node.false_branch)
         
         return visited
+    
+    def filter_by_detail_level(self, detail_level: DetailLevel) -> 'ScenarioFlowModel':
+        """
+        Filter the SFM to include only nodes appropriate for the requested detail level.
+        
+        Detail level hierarchy:
+        - HIGH: Only nodes with min_detail_level == HIGH
+        - MEDIUM: Nodes with min_detail_level == HIGH or MEDIUM
+        - DEEP: All nodes (HIGH, MEDIUM, or DEEP)
+        
+        Args:
+            detail_level: Requested detail level (HIGH, MEDIUM, or DEEP)
+            
+        Returns:
+            Filtered ScenarioFlowModel with reconnected edges
+        """
+        from copy import deepcopy
+        
+        logger.info(f"Filtering SFM for detail level: {detail_level.value}")
+        
+        # Define detail level hierarchy
+        detail_hierarchy = {
+            DetailLevel.HIGH: [DetailLevel.HIGH],
+            DetailLevel.MEDIUM: [DetailLevel.HIGH, DetailLevel.MEDIUM],
+            DetailLevel.DEEP: [DetailLevel.HIGH, DetailLevel.MEDIUM, DetailLevel.DEEP]
+        }
+        
+        allowed_levels = detail_hierarchy[detail_level]
+        
+        # Filter nodes - always include start and end nodes
+        filtered_nodes: Dict[str, SFMNode] = {}
+        included_node_ids = set()
+        
+        for node_id, node in self.nodes.items():
+            # Always include start and end nodes
+            if (node.node_type == SFMNodeType.START or 
+                node.node_type == SFMNodeType.END):
+                filtered_nodes[node_id] = deepcopy(node)
+                included_node_ids.add(node_id)
+            # Include nodes that match the detail level
+            elif node.min_detail_level in allowed_levels:
+                filtered_nodes[node_id] = deepcopy(node)
+                included_node_ids.add(node_id)
+        
+        # Reconnect edges: update next_nodes, true_branch, false_branch to skip excluded nodes
+        for node_id, node in filtered_nodes.items():
+            # Filter next_nodes
+            filtered_next_nodes = []
+            for next_id in node.next_nodes:
+                if next_id in included_node_ids:
+                    filtered_next_nodes.append(next_id)
+                else:
+                    # Find the next included node reachable from next_id
+                    next_included = self._find_next_included_node(next_id, included_node_ids)
+                    if next_included and next_included not in filtered_next_nodes:
+                        filtered_next_nodes.append(next_included)
+            node.next_nodes = filtered_next_nodes
+            
+            # Update true_branch if it exists
+            if node.true_branch:
+                if node.true_branch in included_node_ids:
+                    pass  # Keep as is
+                else:
+                    next_included = self._find_next_included_node(node.true_branch, included_node_ids)
+                    if next_included:
+                        node.true_branch = next_included
+                    else:
+                        node.true_branch = None
+            
+            # Update false_branch if it exists
+            if node.false_branch:
+                if node.false_branch in included_node_ids:
+                    pass  # Keep as is
+                else:
+                    next_included = self._find_next_included_node(node.false_branch, included_node_ids)
+                    if next_included:
+                        node.false_branch = next_included
+                    else:
+                        node.false_branch = None
+        
+        # Update end_node_ids to only include included end nodes
+        filtered_end_node_ids = [end_id for end_id in self.end_node_ids if end_id in included_node_ids]
+        
+        # If no end nodes remain, find the last included nodes
+        if not filtered_end_node_ids:
+            # Find nodes with no outgoing edges
+            for node_id, node in filtered_nodes.items():
+                if (not node.next_nodes and 
+                    not node.true_branch and 
+                    not node.false_branch and
+                    node.node_type != SFMNodeType.START):
+                    filtered_end_node_ids.append(node_id)
+        
+        # Create filtered SFM
+        filtered_sfm = ScenarioFlowModel(
+            scenario_name=self.scenario_name,
+            entry_function=self.entry_function,
+            start_node_id=self.start_node_id,
+            end_node_ids=filtered_end_node_ids if filtered_end_node_ids else [self.start_node_id],
+            nodes=filtered_nodes,
+            detail_levels_supported=self.detail_levels_supported
+        )
+        
+        logger.info(f"Filtered SFM: {len(filtered_nodes)} nodes (original: {len(self.nodes)})")
+        
+        return filtered_sfm
+    
+    def _find_next_included_node(self, start_node_id: str, included_node_ids: Set[str]) -> Optional[str]:
+        """
+        Find the next included node reachable from start_node_id using BFS.
+        Returns None if no included node is reachable.
+        """
+        if start_node_id in included_node_ids:
+            return start_node_id
+        
+        visited = set()
+        queue = [start_node_id]
+        
+        while queue:
+            node_id = queue.pop(0)
+            if node_id in visited:
+                continue
+            
+            visited.add(node_id)
+            node = self.nodes.get(node_id)
+            
+            if not node:
+                continue
+            
+            # Check if this node is included
+            if node_id in included_node_ids:
+                return node_id
+            
+            # Add successors to queue
+            for next_id in node.next_nodes:
+                if next_id not in visited:
+                    queue.append(next_id)
+            
+            if node.true_branch and node.true_branch not in visited:
+                queue.append(node.true_branch)
+            
+            if node.false_branch and node.false_branch not in visited:
+                queue.append(node.false_branch)
+        
+        return None
 
 
 class SFMConstructor:
