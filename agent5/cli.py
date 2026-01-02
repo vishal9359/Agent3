@@ -109,10 +109,35 @@ def build_parser() -> argparse.ArgumentParser:
         help="Ollama base URL",
     )
     
+    # Build AST command
+    build_ast_parser = subparsers.add_parser(
+        "build-ast",
+        help="Build AST from C++ codebase using libclang and generate JSON",
+    )
+    build_ast_parser.add_argument(
+        "--project_path",
+        required=True,
+        type=_path,
+        help="Path to the C++ project root",
+    )
+    build_ast_parser.add_argument(
+        "-o",
+        "--output",
+        type=_path,
+        default=None,
+        help="Output JSON file path (default: <project_path>/ast_with_calls.json)",
+    )
+    build_ast_parser.add_argument(
+        "--compile-args",
+        nargs="*",
+        default=["-std=c++17"],
+        help="Compilation arguments (default: -std=c++17)",
+    )
+    
     # Flowchart command
     flowchart_parser = subparsers.add_parser(
         "flowchart",
-        help="Generate a Mermaid flowchart from C++ code",
+        help="Generate a Mermaid flowchart from C++ code using JSON AST",
     )
     
     # Two modes: file-based (single function) or scenario-based (project-level)
@@ -133,6 +158,14 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         type=_path,
         help="Output path for the .mmd file",
+    )
+    
+    # AST JSON file option
+    flowchart_parser.add_argument(
+        "--ast-json",
+        type=_path,
+        default=None,
+        help="Path to JSON AST file (if not provided, will look for ast_with_calls.json in project_path)",
     )
     
     # File mode options
@@ -231,6 +264,35 @@ def main(argv: list[str] | None = None) -> int:
             console.print(f"[cyan]Collection:[/cyan] {args.collection}\n")
             return 0
         
+        elif args.command == "build-ast":
+            from agent5.libclang_ast import build_ast_json
+            
+            console.print("\n[bold cyan]═══ Agent5: Build AST from C++ Codebase ═══[/bold cyan]\n")
+            console.print(f"[cyan]Project path:[/cyan] {args.project_path}")
+            
+            output_path = args.output
+            if not output_path:
+                output_path = args.project_path / "ast_with_calls.json"
+            
+            console.print(f"[cyan]Output:[/cyan] {output_path}")
+            console.print(f"[cyan]Compile args:[/cyan] {' '.join(args.compile_args)}")
+            console.print()
+            
+            console.print("[yellow]Parsing C++ codebase with libclang...[/yellow]")
+            console.print("[yellow]Extracting function information and call relationships...[/yellow]")
+            console.print("[yellow]Generating LLM descriptions and flowcharts...[/yellow]")
+            
+            build_ast_json(
+                root_dir=args.project_path,
+                output_path=output_path,
+                compile_args=args.compile_args,
+            )
+            
+            console.print(f"\n[bold green]✓ AST JSON generated successfully[/bold green]")
+            console.print(f"[green]  Output:[/green] {output_path}")
+            console.print()
+            return 0
+        
         elif args.command == "ask":
             from agent5.rag_system import ask_question
             
@@ -304,7 +366,7 @@ def main(argv: list[str] | None = None) -> int:
                 # File mode: Entry-point specified flowchart
                 from agent5.flowchart import write_flowchart
                 
-                console.print(f"[cyan]Mode:[/cyan] Entry-Point Scenario")
+                console.print(f"[cyan]Mode:[/cyan] Entry-Point Scenario (using JSON AST)")
                 console.print(f"[cyan]Entry file:[/cyan] {args.file}")
                 
                 if args.function:
@@ -312,24 +374,34 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     console.print("[cyan]Entry function:[/cyan] Auto-detect")
                 
+                # Determine AST JSON path
+                ast_json_path = args.ast_json
+                if not ast_json_path:
+                    if args.project_path:
+                        ast_json_path = args.project_path / "ast_with_calls.json"
+                    elif args.file:
+                        ast_json_path = args.file.parent / "ast_with_calls.json"
+                
+                if ast_json_path:
+                    console.print(f"[cyan]AST JSON:[/cyan] {ast_json_path}")
+                
                 if args.project_path:
-                    console.print(f"[cyan]Analysis scope:[/cyan] {args.project_path} (entire project)")
-                else:
-                    console.print(f"[cyan]Analysis scope:[/cyan] {args.file.parent} (file directory - WARNING: Limited!)")
+                    console.print(f"[cyan]Project path:[/cyan] {args.project_path}")
                 
                 console.print(f"[cyan]Detail level:[/cyan] {args.detail_level}")
                 console.print(f"[cyan]Max steps:[/cyan] {args.max_steps}")
                 console.print(f"[cyan]Output:[/cyan] {args.out}")
                 console.print()
                 
-                console.print("[yellow]Step 1: Locating entry point...[/yellow]")
-                console.print("[yellow]Step 2: Extracting scenario flow across project...[/yellow]")
-                console.print("[yellow]Step 3: Building Scenario Flow Model (SFM)...[/yellow]")
+                console.print("[yellow]Step 1: Loading JSON AST...[/yellow]")
+                console.print("[yellow]Step 2: Building Scenario Flow Model (SFM)...[/yellow]")
+                console.print("[yellow]Step 3: Generating Mermaid flowchart...[/yellow]")
                 
                 flowchart = write_flowchart(
                     output_path=args.out,
                     file_path=args.file,
                     function_name=args.function,
+                    ast_json_path=ast_json_path,
                     project_path=args.project_path,
                     max_steps=args.max_steps,
                     detail_level=args.detail_level,

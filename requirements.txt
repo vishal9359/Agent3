@@ -10,9 +10,12 @@ langchain-ollama>=0.2.0,<0.3.0
 chroma-hnswlib==0.7.6
 chromadb==0.5.23
 
-# Tree-sitter for AST parsing
+# Tree-sitter for AST parsing (deprecated, kept for backward compatibility)
 tree-sitter==0.25.2
 tree-sitter-cpp==0.23.4
+
+# libclang for AST parsing
+clang==18.1.0
 
 # Utilities
 pydantic==2.10.4
