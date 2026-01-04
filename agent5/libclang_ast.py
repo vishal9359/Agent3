@@ -54,7 +54,9 @@ def get_module_name(file_path: str, root_dir: str) -> str:
 def node_uid(cursor: cindex.Cursor) -> str:
     """Generate stable unique identifier for functions/methods."""
     loc = cursor.location
-    return f"{cursor.spelling}:{loc.file.name}:{loc.line}"
+    name = cursor.spelling or "<anonymous>"
+    file_name = loc.file.name if loc.file else "<unknown>"
+    return f"{name}:{file_name}:{loc.line}"
 
 
 def extract_node_info(cursor: cindex.Cursor, file_path: str, module_name: str) -> dict:
@@ -90,15 +92,15 @@ def extract_node_info(cursor: cindex.Cursor, file_path: str, module_name: str) -
     
     return {
         "uid": node_uid(cursor),
-        "name": cursor.spelling,
+        "name": cursor.spelling or "<anonymous>",
         "line_start": extent.start.line,
         "column_start": extent.start.column,
         "line_end": extent.end.line,
         "column_end": extent.end.column,
         "file_name": file_path,
         "module_name": module_name,
-        "description": description_response.content,
-        "flowchart": flowchart_response.content,
+        "description": getattr(description_response, "content", str(description_response)),
+        "flowchart": getattr(flowchart_response, "content", str(flowchart_response)),
         "callees": [],
         "callers": [],
     }
@@ -119,7 +121,7 @@ def visit(
     if cursor.location.file and cursor.location.file.name != file_path:
         return
     
-    fqn = module_name + ":" + file_path + ":" + cursor.spelling
+    fqn = module_name + ":" + file_path + ":" + (cursor.spelling or "<anonymous>")
     if fqn in visited:
         return
     else:
@@ -241,4 +243,5 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     build_ast_json(args.path, args.output, args.compile_args)
+
 

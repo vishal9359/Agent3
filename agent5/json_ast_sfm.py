@@ -114,7 +114,7 @@ def build_sfm_from_ast(
     visited: set[str] = {entry_function_uid}
     frontier: list[str] = [entry_id]
     
-    _process_call_graph(
+    exit_points = _process_call_graph(
         entry_node,
         node_map,
         builder,
@@ -124,9 +124,9 @@ def build_sfm_from_ast(
         max_steps,
     )
     
-    # Connect remaining frontier to end
-    for node_id in frontier:
-        if node_id != "end":
+    # Connect remaining exit points to end
+    for node_id in exit_points:
+        if node_id and node_id != "end":
             builder.add_edge(node_id, "end")
     
     return builder.build()
@@ -140,13 +140,27 @@ def _process_call_graph(
     visited: set[str],
     detail_level: DetailLevel,
     max_steps: int,
-) -> None:
-    """Process call graph recursively to build SFM."""
+) -> list[str]:
+    """
+    Process call graph recursively to build SFM.
+    
+    Returns:
+        New frontier (list of node IDs that represent exit points)
+    """
     if builder._step_count >= max_steps:
-        return
+        return frontier
+    
+    if not frontier:
+        return frontier
+    
+    # Collect all exit points from processed callees
+    exit_points: list[str] = []
     
     # Process callees based on detail level
     for callee_ref in current_node.callees:
+        if builder._step_count >= max_steps:
+            break
+            
         callee_uid = callee_ref.get("uid")
         if not callee_uid or callee_uid not in node_map:
             continue
@@ -164,7 +178,7 @@ def _process_call_graph(
                 for src in frontier:
                     if src != "end":
                         builder.add_edge(src, ref_id)
-                frontier = [ref_id]
+                exit_points.append(ref_id)
             continue
         
         visited.add(callee_uid)
@@ -181,19 +195,21 @@ def _process_call_graph(
                 builder.add_edge(src, callee_id)
         
         # Recursively process callee's call graph
-        new_frontier = [callee_id]
-        _process_call_graph(
+        callee_exit_points = _process_call_graph(
             callee_node,
             node_map,
             builder,
-            new_frontier,
+            [callee_id],
             visited,
             detail_level,
             max_steps,
         )
         
-        # Update frontier to include callee's exit points
-        frontier = new_frontier
+        # Collect exit points from this callee
+        exit_points.extend(callee_exit_points)
+    
+    # Return merged exit points, or original frontier if no callees were processed
+    return exit_points if exit_points else frontier
 
 
 def _should_include_callee(node: ASTNode, detail_level: DetailLevel) -> bool:
@@ -285,4 +301,5 @@ def build_sfm_from_json_file(
         max_steps=max_steps,
         detail_level=detail_level,
     )
+
 
