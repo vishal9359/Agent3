@@ -340,8 +340,15 @@ def _clean_and_validate_flowchart(flowchart: str) -> str:
         
         # Fix node connections - ensure proper arrow syntax
         if "-->" in line:
-            # Normalize arrow spacing
+            # Fix arrow with label: Node1 -->|Label| Node2 or Node1 --> |Label| Node2
+            # Normalize to: Node1 -->|Label| Node2 (no spaces around |)
+            line = re.sub(r'\s*-->\s*\|\s*', ' -->|', line)
+            line = re.sub(r'\|\s*-->\s*', '|', line)
+            # Fix remaining arrow spacing (without labels)
             line = re.sub(r'\s*-->\s*', ' --> ', line)
+            # Fix any remaining spacing issues around |
+            line = re.sub(r'\|\s+', '|', line)
+            line = re.sub(r'\s+\|', '|', line)
         
         # Fix node IDs - replace invalid IDs (with spaces, special chars) with simple ones
         # Pattern: NodeID[Label] or NodeID{Label}
@@ -392,6 +399,40 @@ def _clean_and_validate_flowchart(flowchart: str) -> str:
         cleaned_lines.append(line)
     
     flowchart = "\n".join(cleaned_lines)
+    
+    # Additional validation and fixes
+    # Fix common Mermaid syntax issues
+    final_lines = []
+    for line in flowchart.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        
+        # Fix arrow with label syntax: ensure proper format Node1 -->|Label| Node2
+        # Handle cases like: Node1 --> |Label| Node2 or Node1 -->| Label | Node2
+        # The correct Mermaid syntax is: Node1 -->|Label| Node2 (no spaces around |)
+        if "-->" in line and "|" in line:
+            # Pattern: NodeID --> |Label| NodeID or NodeID -->| Label | NodeID
+            # Remove all spaces around pipes in labels
+            line = re.sub(r'-->\s*\|\s*([^|]+?)\s*\|\s*', r'-->|\1|', line)
+        
+        # Ensure decision nodes have proper syntax: NodeID{Label}
+        # Fix cases like: NodeID {Label} or NodeID{ Label }
+        line = re.sub(r'(\w+)\s*\{\s*([^}]+)\s*\}', r'\1{\2}', line)
+        
+        # Fix node connections - ensure no spaces in node IDs before arrows
+        # Pattern: NodeID [Label] --> should be NodeID[Label] -->
+        line = re.sub(r'(\w+)\s+(\[|\{)', r'\1\2', line)
+        
+        # Ensure proper spacing: NodeID[Label] --> NextNodeID (space before -->)
+        line = re.sub(r'(\]|\})\s*-->\s*', r'\1 --> ', line)
+        
+        # Fix label syntax: |Label| should have no spaces around |
+        line = re.sub(r'\|\s+([^|]+)\s+\|', r'|\1|', line)
+        
+        final_lines.append(line)
+    
+    flowchart = "\n".join(final_lines)
     
     # Final validation: ensure it starts correctly
     if not (flowchart.startswith("flowchart") or flowchart.startswith("graph")):
