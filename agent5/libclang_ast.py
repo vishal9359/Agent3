@@ -261,7 +261,9 @@ def visit(
                         "callees": [],
                         "callers": [],
                     }
-            current_fn = uid  # Update current function context (for both passes)
+            # CRITICAL: Always set current_fn when we encounter a function, even if already in nodes
+            # This is essential for the second pass to track which function we're inside
+            current_fn = uid
     
     # Call expression - extract callee
     if cursor.kind == cindex.CursorKind.CALL_EXPR:
@@ -337,9 +339,11 @@ def visit(
             call_edges[current_fn].add(f"NAME:{callee_name}")
         
         # Debug output (limit to avoid spam)
-        if is_second_pass and len(call_edges) <= 20:  # Only print first 20 functions with calls
+        if is_second_pass:
             caller_name = nodes.get(current_fn, {}).get("name", current_fn) if current_fn in nodes else current_fn
-            print(f"[DEBUG] Found call: {caller_name} -> {callee_name or callee_uid or 'unknown'}")
+            # Print first 50 calls found
+            if sum(len(v) for v in call_edges.values()) <= 50:
+                print(f"[DEBUG] Found call: {caller_name} -> {callee_name or callee_uid or 'unknown'}")
     
     # Recursively process children
     for child in cursor.get_children():
@@ -447,7 +451,15 @@ def parse_codebase(root_dir: str | Path, compile_args: list[str] | None = None) 
                 except Exception as e:
                     print(f"[WARN] Failed to parse {path} for call extraction: {e}")
     
-    print(f"[INFO] Extracted {sum(len(callees) for callees in call_edges.values())} call edges from AST")
+    total_raw_edges = sum(len(callees) for callees in call_edges.values())
+    print(f"[INFO] Extracted {total_raw_edges} raw call edges from AST")
+    print(f"[INFO] Found calls in {len(call_edges)} functions")
+    
+    if total_raw_edges == 0:
+        print("[WARN] No call edges found! This might indicate:")
+        print("  - Functions don't call other functions")
+        print("  - Call extraction is not working properly")
+        print("  - current_fn is not being set correctly")
     
     # Resolve call edges: match by name if UID doesn't exist
     resolved_edges: defaultdict[str, set[str]] = defaultdict(set)
@@ -455,6 +467,7 @@ def parse_codebase(root_dir: str | Path, compile_args: list[str] | None = None) 
     
     for caller_uid, callees in call_edges.items():
         if caller_uid not in nodes:
+            print(f"[WARN] Caller UID {caller_uid} not found in nodes, skipping")
             continue  # Skip if caller not in nodes
             
         for callee_ref in callees:
@@ -510,6 +523,8 @@ def parse_codebase(root_dir: str | Path, compile_args: list[str] | None = None) 
                 if unresolved_calls <= 10:  # Limit output
                     print(f"[DEBUG] Unresolved call: {caller_uid} -> {callee_name}")
     
+    print(f"[INFO] Resolved {len(resolved_edges)} caller functions with {sum(len(callees) for callees in resolved_edges.values())} total relationships")
+    
     # Build callees and callers lists (avoid duplicates)
     total_edges = 0
     for caller_uid, callee_uids in resolved_edges.items():
@@ -528,6 +543,8 @@ def parse_codebase(root_dir: str | Path, compile_args: list[str] | None = None) 
                         callers_list.append({"uid": caller_uid})
     
     print(f"[INFO] Built call graph with {total_edges} call relationships")
+    print(f"[INFO] Functions with callees: {sum(1 for n in nodes.values() if len(n.get('callees', [])) > 0)}")
+    print(f"[INFO] Functions with callers: {sum(1 for n in nodes.values() if len(n.get('callers', [])) > 0)}")
     if unresolved_calls > 0:
         print(f"[WARN] {unresolved_calls} call relationships could not be resolved (may be external functions, templates, or system calls)")
     
