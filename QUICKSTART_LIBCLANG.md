@@ -9,7 +9,7 @@ python -m agent5 build-ast --project_path ./my_project -o ast.json
 
 ### 2. Generate Flowchart
 ```bash
-python -m agent5 flowchart --function main --ast-json ast.json --out flow.mmd
+python -m agent5 flowchart --ast-json ast.json --function main --out flow.mmd
 ```
 
 ## Prerequisites Check
@@ -40,8 +40,8 @@ python -m agent5 build-ast \
 
 # Step 2: Generate flowchart
 python -m agent5 flowchart \
-  --function main \
   --ast-json ast_with_calls.json \
+  --function main \
   --out flowchart.mmd \
   --detail-level medium
 
@@ -65,4 +65,5 @@ cat flowchart.mmd
 - Check for parsing warnings in build-ast output
 
 For more details, see `USAGE_LIBCLANG.md`.
+
 
