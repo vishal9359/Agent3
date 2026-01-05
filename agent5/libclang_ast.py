@@ -14,6 +14,7 @@ from pathlib import Path
 from clang import cindex
 from langchain.messages import HumanMessage
 from langchain_ollama import ChatOllama
+from typing import Any
 
 from agent5.config import SETTINGS
 
@@ -77,8 +78,303 @@ def _get_fully_qualified_name(cursor: cindex.Cursor) -> str:
     return name
 
 
+def _analyze_ast_node_bottom_up(cursor: cindex.Cursor, semantic_info: dict[str, Any]) -> dict[str, Any]:
+    """
+    Analyze AST node bottom-up, building semantic understanding incrementally.
+    
+    This implements a DocAgent-inspired approach where meaning is built at leaf nodes
+    first and aggregated while backtracking up the tree.
+    """
+    node_info = {
+        "type": str(cursor.kind),
+        "spelling": cursor.spelling or "",
+        "line": cursor.location.line if cursor.location else 0,
+        "semantic": "",
+        "children": []
+    }
+    
+    # First, recursively process children (bottom-up traversal)
+    children_semantics = []
+    for child in cursor.get_children():
+        child_info = _analyze_ast_node_bottom_up(child, semantic_info)
+        children_semantics.append(child_info)
+        node_info["children"].append(child_info)
+    
+    # Now build semantic understanding at this level based on children
+    kind = cursor.kind
+    
+    # Leaf nodes: extract basic semantic information
+    if kind == cindex.CursorKind.DECL_REF_EXPR:
+        node_info["semantic"] = f"reference to {cursor.spelling}"
+        if cursor.spelling:
+            semantic_info["variables"].add(cursor.spelling)
+    
+    elif kind == cindex.CursorKind.INTEGER_LITERAL:
+        node_info["semantic"] = f"integer literal: {cursor.spelling}"
+    
+    elif kind == cindex.CursorKind.STRING_LITERAL:
+        node_info["semantic"] = f"string literal: {cursor.spelling}"
+    
+    elif kind == cindex.CursorKind.CALL_EXPR:
+        callee_name = cursor.spelling or (cursor.referenced.spelling if cursor.referenced else "unknown")
+        node_info["semantic"] = f"function call: {callee_name}"
+        semantic_info["function_calls"].add(callee_name)
+        # Aggregate arguments from children
+        args = [c["semantic"] for c in children_semantics if c["semantic"]]
+        if args:
+            node_info["semantic"] += f" with args: {', '.join(args)}"
+    
+    elif kind == cindex.CursorKind.BINARY_OPERATOR:
+        # Get operator token
+        tokens = list(cursor.get_tokens())
+        op_token = tokens[1].spelling if len(tokens) > 1 else "?"
+        left = children_semantics[0]["semantic"] if len(children_semantics) > 0 else "value"
+        right = children_semantics[1]["semantic"] if len(children_semantics) > 1 else "value"
+        node_info["semantic"] = f"{left} {op_token} {right}"
+        # Special handling for assignment
+        if op_token == "=":
+            semantic_info["operations"].append(f"assign {left} = {right}")
+    
+    elif kind == cindex.CursorKind.UNARY_OPERATOR:
+        tokens = list(cursor.get_tokens())
+        op_token = tokens[0].spelling if len(tokens) > 0 else "?"
+        operand = children_semantics[0]["semantic"] if len(children_semantics) > 0 else "value"
+        node_info["semantic"] = f"{op_token}{operand}"
+    
+    elif kind == cindex.CursorKind.IF_STMT:
+        condition = children_semantics[0]["semantic"] if len(children_semantics) > 0 else "condition"
+        node_info["semantic"] = f"if ({condition})"
+        semantic_info["control_flow"].append("if")
+        if len(children_semantics) > 1:
+            then_part = children_semantics[1]["semantic"]
+            node_info["semantic"] += f" then {then_part}"
+        if len(children_semantics) > 2:
+            else_part = children_semantics[2]["semantic"]
+            node_info["semantic"] += f" else {else_part}"
+    
+    elif kind == cindex.CursorKind.WHILE_STMT:
+        condition = children_semantics[0]["semantic"] if len(children_semantics) > 0 else "condition"
+        body = children_semantics[1]["semantic"] if len(children_semantics) > 1 else "body"
+        node_info["semantic"] = f"while ({condition}) do {body}"
+        semantic_info["control_flow"].append("while")
+    
+    elif kind == cindex.CursorKind.FOR_STMT:
+        init = children_semantics[0]["semantic"] if len(children_semantics) > 0 else "init"
+        condition = children_semantics[1]["semantic"] if len(children_semantics) > 1 else "condition"
+        increment = children_semantics[2]["semantic"] if len(children_semantics) > 2 else "increment"
+        body = children_semantics[3]["semantic"] if len(children_semantics) > 3 else "body"
+        node_info["semantic"] = f"for ({init}; {condition}; {increment}) do {body}"
+        semantic_info["control_flow"].append("for")
+    
+    elif kind == cindex.CursorKind.RETURN_STMT:
+        value = children_semantics[0]["semantic"] if len(children_semantics) > 0 else "void"
+        node_info["semantic"] = f"return {value}"
+        semantic_info["control_flow"].append("return")
+    
+    elif kind == cindex.CursorKind.COMPOUND_STMT:
+        # Aggregate all statements in the compound
+        stmts = [c["semantic"] for c in children_semantics if c["semantic"]]
+        node_info["semantic"] = "; ".join(stmts) if stmts else "{}"
+    
+    elif kind == cindex.CursorKind.VAR_DECL:
+        var_name = cursor.spelling or "variable"
+        var_type = cursor.type.spelling if cursor.type else "unknown"
+        init = children_semantics[0]["semantic"] if len(children_semantics) > 0 else None
+        if init:
+            node_info["semantic"] = f"declare {var_type} {var_name} = {init}"
+        else:
+            node_info["semantic"] = f"declare {var_type} {var_name}"
+        semantic_info["variables"].add(var_name)
+    
+    elif kind == cindex.CursorKind.PARM_DECL:
+        param_name = cursor.spelling or "param"
+        param_type = cursor.type.spelling if cursor.type else "unknown"
+        node_info["semantic"] = f"{param_type} {param_name}"
+        semantic_info["parameters"].add(f"{param_type} {param_name}")
+    
+    elif kind == cindex.CursorKind.MEMBER_REF_EXPR:
+        obj = children_semantics[0]["semantic"] if len(children_semantics) > 0 else "object"
+        member = cursor.spelling or "member"
+        node_info["semantic"] = f"{obj}.{member}"
+    
+    elif kind == cindex.CursorKind.ARRAY_SUBSCRIPT_EXPR:
+        array = children_semantics[0]["semantic"] if len(children_semantics) > 0 else "array"
+        index = children_semantics[1]["semantic"] if len(children_semantics) > 1 else "index"
+        node_info["semantic"] = f"{array}[{index}]"
+    
+    # Aggregate semantic information from children if not already set
+    if not node_info["semantic"] and children_semantics:
+        # Default: aggregate children semantics
+        child_semantics = [c["semantic"] for c in children_semantics if c["semantic"]]
+        if child_semantics:
+            node_info["semantic"] = " ".join(child_semantics)
+    
+    return node_info
+
+
+def _build_semantic_representation(cursor: cindex.Cursor) -> dict[str, Any]:
+    """
+    Build a semantic representation of the function using bottom-up aggregation.
+    """
+    semantic_info = {
+        "variables": set(),
+        "function_calls": set(),
+        "control_flow": [],
+        "parameters": set(),
+        "operations": [],
+        "ast_structure": None
+    }
+    
+    # Build AST analysis bottom-up
+    ast_structure = _analyze_ast_node_bottom_up(cursor, semantic_info)
+    semantic_info["ast_structure"] = ast_structure
+    
+    # Convert sets to lists for JSON serialization
+    semantic_info["variables"] = list(semantic_info["variables"])
+    semantic_info["function_calls"] = list(semantic_info["function_calls"])
+    semantic_info["parameters"] = list(semantic_info["parameters"])
+    
+    return semantic_info
+
+
+def _generate_description_from_semantics(function_code: str, semantic_info: dict[str, Any], function_name: str) -> str:
+    """
+    Generate function description using bottom-up semantic understanding.
+    """
+    # Build semantic context
+    params = ", ".join(semantic_info.get("parameters", [])) if semantic_info.get("parameters") else "none"
+    vars_used = ", ".join(list(semantic_info.get("variables", []))[:10])  # Limit to 10 vars
+    calls = ", ".join(list(semantic_info.get("function_calls", []))[:10])  # Limit to 10 calls
+    control_flow = ", ".join(semantic_info.get("control_flow", [])) if semantic_info.get("control_flow") else "linear"
+    operations = ", ".join(semantic_info.get("operations", [])[:10])  # Limit to 10 operations
+    
+    # Extract main semantic flow from AST structure (get the function body semantic)
+    ast_structure = semantic_info.get("ast_structure", {})
+    main_flow = ast_structure.get("semantic", "")
+    
+    # If main flow is too long, try to get a summary from children
+    if len(main_flow) > 800:
+        # Get semantic from direct children (statements)
+        children = ast_structure.get("children", [])
+        child_semantics = [c.get("semantic", "") for c in children if c.get("semantic")]
+        if child_semantics:
+            main_flow = "; ".join(child_semantics[:10])  # Top 10 statements
+        else:
+            main_flow = main_flow[:800] + "..."
+    
+    prompt = f"""You are a C++ Project Documentation Expert using a DocAgent-inspired bottom-up semantic understanding approach.
+
+Function: {function_name}
+
+Semantic Analysis (Built bottom-up from AST):
+- Parameters: {params}
+- Variables used: {vars_used}
+- Function calls: {calls}
+- Control flow structures: {control_flow}
+- Key operations: {operations}
+
+Semantic Flow (aggregated from leaf nodes):
+{main_flow}
+
+Full Function Code:
+{function_code}
+
+Based on the bottom-up semantic analysis above (where meaning was built from leaf nodes and aggregated upward), provide a comprehensive, accurate Requirement Description for this function.
+
+The description should:
+1. Explain what the function does based on the semantic understanding derived from AST analysis
+2. Describe the control flow and logic patterns detected
+3. Mention key operations, variable usage, and function calls identified
+4. Be precise and accurate - don't invent anything not present in the semantic analysis
+5. Focus on the actual behavior derived from the bottom-up semantic aggregation
+
+Provide a clear, detailed Requirement Description:"""
+    
+    messages = [HumanMessage(content=prompt)]
+    response = llm.invoke(messages)
+    return getattr(response, "content", str(response))
+
+
+def _generate_flowchart_from_semantics(function_code: str, semantic_info: dict[str, Any], function_name: str) -> str:
+    """
+    Generate Mermaid flowchart using bottom-up semantic understanding.
+    """
+    # Build semantic context
+    params = ", ".join(semantic_info.get("parameters", [])) if semantic_info.get("parameters") else "none"
+    control_flow = semantic_info.get("control_flow", [])
+    calls = semantic_info.get("function_calls", [])
+    operations = semantic_info.get("operations", [])
+    
+    # Extract control flow structure
+    control_flow_str = ", ".join(control_flow) if control_flow else "linear"
+    calls_str = ", ".join(list(calls)[:10]) if calls else "none"
+    operations_str = ", ".join(list(operations)[:10]) if operations else "none"
+    
+    # Extract main semantic flow from AST structure
+    ast_structure = semantic_info.get("ast_structure", {})
+    main_flow = ast_structure.get("semantic", "")
+    
+    # Get structured flow from children for better flowchart generation
+    children = ast_structure.get("children", [])
+    structured_flow = []
+    for child in children[:15]:  # Limit to 15 top-level statements
+        child_semantic = child.get("semantic", "")
+        child_type = child.get("type", "")
+        if child_semantic:
+            structured_flow.append(f"{child_type}: {child_semantic[:100]}")
+    
+    structured_flow_str = "\n".join(structured_flow) if structured_flow else main_flow[:500]
+    
+    prompt = f"""You are a C++ Project Documentation Expert using a DocAgent-inspired bottom-up semantic understanding approach.
+
+Function: {function_name}
+Parameters: {params}
+Control flow detected: {control_flow_str}
+Function calls: {calls_str}
+Key operations: {operations_str}
+
+Semantic Analysis (Built bottom-up from AST):
+{structured_flow_str}
+
+Full Function Code:
+{function_code}
+
+Based on the bottom-up semantic analysis above (where control flow and operations were identified from AST traversal), generate a comprehensive Mermaid flowchart for this function.
+
+The flowchart must:
+1. Accurately represent ALL control flow structures detected: {control_flow_str}
+2. Show function calls: {calls_str}
+3. Include key operations and variable assignments
+4. Reflect the actual structure derived from bottom-up semantic understanding
+5. Use proper Mermaid syntax with proper node IDs and connections
+6. Be complete and accurate - don't skip any control flow branches
+
+Generate only the Mermaid flowchart code (start with graph TD or flowchart TD, no markdown code blocks, no explanations):"""
+    
+    messages = [HumanMessage(content=prompt)]
+    response = llm.invoke(messages)
+    flowchart = getattr(response, "content", str(response))
+    
+    # Clean up the response (remove markdown code blocks if present)
+    flowchart = flowchart.strip()
+    if flowchart.startswith("```"):
+        lines = flowchart.split("\n")
+        # Remove first and last lines if they are code block markers
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        flowchart = "\n".join(lines)
+    
+    # Ensure it starts with flowchart or graph
+    if not (flowchart.startswith("graph") or flowchart.startswith("flowchart")):
+        flowchart = "flowchart TD\n" + flowchart
+    
+    return flowchart.strip()
+
+
 def extract_node_info(cursor: cindex.Cursor, file_path: str, module_name: str) -> dict:
-    """Extract node information including LLM-generated description and flowchart."""
+    """Extract node information including LLM-generated description and flowchart using bottom-up semantic analysis."""
     extent = cursor.extent
     
     # Read function code
@@ -88,29 +384,21 @@ def extract_node_info(cursor: cindex.Cursor, file_path: str, module_name: str) -
     
     function_code = "".join(l)
     
-    # Generate description using LLM
-    description_prompt = (
-        "You are a C++ Project Documentation Expert. "
-        "Provide a Requirement Description for the given function written in C++. "
-        "Be concise and don't invent anything. "
-        f"Function:\n{function_code}"
-    )
-    messages = [HumanMessage(content=description_prompt)]
-    description_response = llm.invoke(messages)
-    
-    # Generate flowchart using LLM
-    flowchart_prompt = (
-        "You are a C++ Project Documentation Expert. "
-        "Generate a Mermaid flowchart for the given function written in C++. "
-        "Be concise and don't invent anything. "
-        f"Function:\n{function_code}"
-    )
-    messages = [HumanMessage(content=flowchart_prompt)]
-    flowchart_response = llm.invoke(messages)
-    
-    # Get both simple and fully qualified names
+    # Get function name
     simple_name = cursor.spelling or "<anonymous>"
     qualified_name = _get_fully_qualified_name(cursor)
+    
+    # Build semantic representation using bottom-up approach
+    print(f"[INFO] Analyzing semantics for function: {simple_name}")
+    semantic_info = _build_semantic_representation(cursor)
+    
+    # Generate description using semantic understanding
+    print(f"[INFO] Generating description for: {simple_name}")
+    description = _generate_description_from_semantics(function_code, semantic_info, qualified_name)
+    
+    # Generate flowchart using semantic understanding
+    print(f"[INFO] Generating flowchart for: {simple_name}")
+    flowchart = _generate_flowchart_from_semantics(function_code, semantic_info, qualified_name)
     
     return {
         "uid": node_uid(cursor),
@@ -122,8 +410,8 @@ def extract_node_info(cursor: cindex.Cursor, file_path: str, module_name: str) -
         "column_end": extent.end.column,
         "file_name": file_path,
         "module_name": module_name,
-        "description": getattr(description_response, "content", str(description_response)),
-        "flowchart": getattr(flowchart_response, "content", str(flowchart_response)),
+        "description": description,
+        "flowchart": flowchart,
         "callees": [],
         "callers": [],
     }
