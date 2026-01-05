@@ -295,9 +295,114 @@ Provide a clear, detailed Requirement Description:"""
     return getattr(response, "content", str(response))
 
 
-def _generate_flowchart_from_semantics(function_code: str, semantic_info: dict[str, Any], function_name: str) -> str:
+def _clean_and_validate_flowchart(flowchart: str) -> str:
     """
-    Generate Mermaid flowchart using bottom-up semantic understanding.
+    Clean and validate Mermaid flowchart syntax.
+    Fixes common issues like invalid node IDs, missing connections, etc.
+    """
+    import re
+    
+    # Remove markdown code blocks
+    flowchart = flowchart.strip()
+    if flowchart.startswith("```"):
+        lines = flowchart.split("\n")
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        flowchart = "\n".join(lines)
+    
+    flowchart = flowchart.strip()
+    
+    # Ensure it starts with flowchart TD (preferred) or graph TD
+    if not flowchart.startswith("flowchart") and not flowchart.startswith("graph"):
+        flowchart = "flowchart TD\n" + flowchart
+    elif flowchart.startswith("graph"):
+        # Replace graph with flowchart for better compatibility
+        flowchart = flowchart.replace("graph TD", "flowchart TD", 1)
+        flowchart = flowchart.replace("graph LR", "flowchart LR", 1)
+    
+    # Fix common syntax issues
+    lines = flowchart.split("\n")
+    cleaned_lines = []
+    node_id_map = {}  # Map old invalid IDs to new simple IDs
+    next_id_letter = ord('A')
+    
+    for line in lines:
+        original_line = line
+        line = line.strip()
+        if not line:
+            continue
+        
+        # Skip comments
+        if line.startswith("%%") or line.startswith("//"):
+            continue
+        
+        # Fix node connections - ensure proper arrow syntax
+        if "-->" in line:
+            # Normalize arrow spacing
+            line = re.sub(r'\s*-->\s*', ' --> ', line)
+        
+        # Fix node IDs - replace invalid IDs (with spaces, special chars) with simple ones
+        # Pattern: NodeID[Label] or NodeID{Label}
+        def replace_node_id(match):
+            node_id = match.group(1)
+            # If node ID is invalid (has spaces, special chars, or is multi-word)
+            if ' ' in node_id or not re.match(r'^[A-Za-z][A-Za-z0-9]*$', node_id):
+                # Use mapping to ensure consistency
+                if node_id not in node_id_map:
+                    # Generate simple ID: A, B, C, etc.
+                    new_id = chr(next_id_letter)
+                    node_id_map[node_id] = new_id
+                    nonlocal next_id_letter
+                    next_id_letter += 1
+                    if next_id_letter > ord('Z'):
+                        next_id_letter = ord('A')  # Wrap around
+                else:
+                    new_id = node_id_map[node_id]
+                return new_id + match.group(2)  # new_id + [ or {
+            return match.group(0)  # Keep original if valid
+        
+        # Replace node definitions: NodeID[ or NodeID{
+        line = re.sub(r'([A-Za-z0-9_\s]+)([\[{])', replace_node_id, line)
+        
+        # Also fix node references in arrows (standalone node IDs)
+        if " --> " in line:
+            parts = line.split(" --> ")
+            for i, part in enumerate(parts):
+                part = part.strip()
+                # If part is just a node ID (no brackets), check if it needs fixing
+                if not '[' in part and not '{' in part and part:
+                    # Check if it's a valid simple ID
+                    if not re.match(r'^[A-Za-z][A-Za-z0-9]*$', part):
+                        # Map to simple ID
+                        if part not in node_id_map:
+                            new_id = chr(next_id_letter)
+                            node_id_map[part] = new_id
+                            next_id_letter += 1
+                            if next_id_letter > ord('Z'):
+                                next_id_letter = ord('A')
+                        else:
+                            new_id = node_id_map[part]
+                        parts[i] = new_id
+                    else:
+                        parts[i] = part
+            line = " --> ".join(parts)
+        
+        cleaned_lines.append(line)
+    
+    flowchart = "\n".join(cleaned_lines)
+    
+    # Final validation: ensure it starts correctly
+    if not (flowchart.startswith("flowchart") or flowchart.startswith("graph")):
+        flowchart = "flowchart TD\n" + flowchart
+    
+    return flowchart.strip()
+
+
+def _generate_flowchart_from_semantics(function_code: str, semantic_info: dict[str, Any], function_name: str, description: str) -> str:
+    """
+    Generate Mermaid flowchart using bottom-up semantic understanding and description.
     """
     # Build semantic context
     params = ", ".join(semantic_info.get("parameters", [])) if semantic_info.get("parameters") else "none"
@@ -336,41 +441,45 @@ Key operations: {operations_str}
 Semantic Analysis (Built bottom-up from AST):
 {structured_flow_str}
 
+Function Description (MUST MATCH THIS):
+{description[:1500]}
+
 Full Function Code:
 {function_code}
 
-Based on the bottom-up semantic analysis above (where control flow and operations were identified from AST traversal), generate a comprehensive Mermaid flowchart for this function.
+Based on the bottom-up semantic analysis and the function description above, generate a VALID, COMPLETE Mermaid flowchart that EXACTLY matches the description.
 
-The flowchart must:
-1. Accurately represent ALL control flow structures detected: {control_flow_str}
-2. Show function calls: {calls_str}
-3. Include key operations and variable assignments
-4. Reflect the actual structure derived from bottom-up semantic understanding
-5. Use proper Mermaid syntax with proper node IDs and connections
-6. Be complete and accurate - don't skip any control flow branches
+CRITICAL REQUIREMENTS:
+1. Start with "flowchart TD" (not "graph TD")
+2. Use simple node IDs (A, B, C, D, etc.) - NO spaces, special chars, or multi-word IDs
+3. Every node must be connected - no orphaned nodes
+4. All if/else/switch branches must have proper Yes/No labels and ALL paths must connect to End
+5. All control flow structures must be properly closed
+6. Use proper Mermaid syntax: NodeID[Label] --> NextNodeID
+7. For conditions: NodeID{{Decision?}} -->|Yes| YesNode
+8. For conditions: NodeID{{Decision?}} -->|No| NoNode
+9. Ensure ALL paths eventually reach an End node
+10. The flowchart MUST visualize exactly what the description says - if description mentions try/catch, show it; if it mentions multiple if branches, show all of them
 
-Generate only the Mermaid flowchart code (start with graph TD or flowchart TD, no markdown code blocks, no explanations):"""
+Example valid syntax:
+flowchart TD
+    A[Start] --> B[Action]
+    B --> C{{Decision?}}
+    C -->|Yes| D[Action if Yes]
+    C -->|No| E[Action if No]
+    D --> F[End]
+    E --> F
+
+Generate ONLY valid Mermaid flowchart code starting with "flowchart TD". No markdown, no explanations, no code blocks:"""
     
     messages = [HumanMessage(content=prompt)]
     response = llm.invoke(messages)
     flowchart = getattr(response, "content", str(response))
     
-    # Clean up the response (remove markdown code blocks if present)
-    flowchart = flowchart.strip()
-    if flowchart.startswith("```"):
-        lines = flowchart.split("\n")
-        # Remove first and last lines if they are code block markers
-        if lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        flowchart = "\n".join(lines)
+    # Clean up and validate the flowchart
+    flowchart = _clean_and_validate_flowchart(flowchart)
     
-    # Ensure it starts with flowchart or graph
-    if not (flowchart.startswith("graph") or flowchart.startswith("flowchart")):
-        flowchart = "flowchart TD\n" + flowchart
-    
-    return flowchart.strip()
+    return flowchart
 
 
 def extract_node_info(cursor: cindex.Cursor, file_path: str, module_name: str) -> dict:
@@ -392,13 +501,13 @@ def extract_node_info(cursor: cindex.Cursor, file_path: str, module_name: str) -
     print(f"[INFO] Analyzing semantics for function: {simple_name}")
     semantic_info = _build_semantic_representation(cursor)
     
-    # Generate description using semantic understanding
+    # Generate description using semantic understanding (must be first)
     print(f"[INFO] Generating description for: {simple_name}")
     description = _generate_description_from_semantics(function_code, semantic_info, qualified_name)
     
-    # Generate flowchart using semantic understanding
+    # Generate flowchart using semantic understanding AND description (to ensure they match)
     print(f"[INFO] Generating flowchart for: {simple_name}")
-    flowchart = _generate_flowchart_from_semantics(function_code, semantic_info, qualified_name)
+    flowchart = _generate_flowchart_from_semantics(function_code, semantic_info, qualified_name, description)
     
     return {
         "uid": node_uid(cursor),
