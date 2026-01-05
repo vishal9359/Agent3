@@ -59,6 +59,24 @@ def node_uid(cursor: cindex.Cursor) -> str:
     return f"{name}:{file_name}:{loc.line}"
 
 
+def _get_fully_qualified_name(cursor: cindex.Cursor) -> str:
+    """Get fully qualified function name including namespace/class."""
+    name = cursor.spelling or "<anonymous>"
+    
+    # Try to get semantic parent (namespace/class)
+    parent = cursor.semantic_parent
+    if parent and parent.kind in (
+        cindex.CursorKind.NAMESPACE,
+        cindex.CursorKind.CLASS_DECL,
+        cindex.CursorKind.STRUCT_DECL,
+    ):
+        parent_name = parent.spelling
+        if parent_name:
+            return f"{parent_name}::{name}"
+    
+    return name
+
+
 def extract_node_info(cursor: cindex.Cursor, file_path: str, module_name: str) -> dict:
     """Extract node information including LLM-generated description and flowchart."""
     extent = cursor.extent
@@ -90,9 +108,14 @@ def extract_node_info(cursor: cindex.Cursor, file_path: str, module_name: str) -
     messages = [HumanMessage(content=flowchart_prompt)]
     flowchart_response = llm.invoke(messages)
     
+    # Get both simple and fully qualified names
+    simple_name = cursor.spelling or "<anonymous>"
+    qualified_name = _get_fully_qualified_name(cursor)
+    
     return {
         "uid": node_uid(cursor),
-        "name": cursor.spelling or "<anonymous>",
+        "name": simple_name,
+        "qualified_name": qualified_name,
         "line_start": extent.start.line,
         "column_start": extent.start.column,
         "line_end": extent.end.line,

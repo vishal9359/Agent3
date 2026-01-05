@@ -19,16 +19,24 @@ class ASTNode:
     
     uid: str
     name: str
-    line_start: int
-    column_start: int
-    line_end: int
-    column_end: int
-    file_name: str
-    module_name: str
-    description: str
-    flowchart: str
-    callees: list[dict[str, str]]
-    callers: list[dict[str, str]]
+    qualified_name: str | None = None  # Fully qualified name with namespace/class
+    line_start: int = 0
+    column_start: int = 0
+    line_end: int = 0
+    column_end: int = 0
+    file_name: str = ""
+    module_name: str = ""
+    description: str = ""
+    flowchart: str = ""
+    callees: list[dict[str, str]] = None
+    callers: list[dict[str, str]] = None
+    
+    def __post_init__(self):
+        """Initialize default values for mutable fields."""
+        if self.callees is None:
+            self.callees = []
+        if self.callers is None:
+            self.callers = []
 
 
 def load_ast_json(json_path: str | Path) -> list[ASTNode]:
@@ -46,6 +54,7 @@ def load_ast_json(json_path: str | Path) -> list[ASTNode]:
         node = ASTNode(
             uid=item["uid"],
             name=item["name"],
+            qualified_name=item.get("qualified_name"),  # May not exist in old JSON files
             line_start=item["line_start"],
             column_start=item["column_start"],
             line_end=item["line_end"],
@@ -89,8 +98,11 @@ def build_sfm_from_ast(
     
     # Determine entry function
     if entry_function_uid is None:
-        # Use first node as entry point
-        entry_function_uid = ast_nodes[0].uid
+        # Try to find a good entry point (main, or function with most callers, or first node)
+        entry_function_uid = _find_best_entry_point(ast_nodes)
+        if not entry_function_uid:
+            # Fallback to first node
+            entry_function_uid = ast_nodes[0].uid
     elif entry_function_uid not in node_map:
         raise RuntimeError(f"Entry function UID not found: {entry_function_uid}")
     
@@ -102,8 +114,8 @@ def build_sfm_from_ast(
     # Add start node
     start_id = "start"
     
-    # Add entry function as first process
-    entry_label = entry_node.name or "Entry Function"
+    # Add entry function as first process (use qualified name if available)
+    entry_label = entry_node.qualified_name or entry_node.name or "Entry Function"
     entry_id = builder.add_process(entry_label)
     if not entry_id:
         raise RuntimeError("Failed to add entry function to SFM")
@@ -114,6 +126,7 @@ def build_sfm_from_ast(
     visited: set[str] = {entry_function_uid}
     frontier: list[str] = [entry_id]
     
+    # Mark as entry function to be less restrictive with filtering
     exit_points = _process_call_graph(
         entry_node,
         node_map,
@@ -122,6 +135,7 @@ def build_sfm_from_ast(
         visited,
         detail_level,
         max_steps,
+        is_entry_function=True,
     )
     
     # Connect remaining exit points to end
@@ -140,9 +154,13 @@ def _process_call_graph(
     visited: set[str],
     detail_level: DetailLevel,
     max_steps: int,
+    is_entry_function: bool = False,
 ) -> list[str]:
     """
     Process call graph recursively to build SFM.
+    
+    Args:
+        is_entry_function: If True, this is the entry function (less restrictive filtering)
     
     Returns:
         New frontier (list of node IDs that represent exit points)
@@ -157,6 +175,7 @@ def _process_call_graph(
     exit_points: list[str] = []
     
     # Process callees based on detail level
+    # For entry function, be less restrictive to show more of the call graph
     for callee_ref in current_node.callees:
         if builder._step_count >= max_steps:
             break
@@ -165,15 +184,29 @@ def _process_call_graph(
         if not callee_uid or callee_uid not in node_map:
             continue
         
-        # Check if we should include this callee based on detail level
         callee_node = node_map[callee_uid]
-        if not _should_include_callee(callee_node, detail_level):
-            continue
+        
+        # For entry function, include all callees (or be less restrictive)
+        # For other functions, apply detail level filtering
+        if not is_entry_function:
+            if not _should_include_callee(callee_node, detail_level):
+                continue
+        else:
+            # For entry function, only exclude obvious noise
+            name_lower = callee_node.name.lower()
+            noise_keywords = (
+                "log", "spdlog", "printf", "fprintf", "sprintf", "cout", "cerr",
+                "trace", "metric", "stats", "telemetry", "debug", "info", "warn",
+                "warning", "error", "assert",
+            )
+            if any(kw in name_lower for kw in noise_keywords):
+                continue
         
         # Avoid cycles
         if callee_uid in visited:
             # Create a reference node instead of recursing
-            ref_id = builder.add_process(f"Call {callee_node.name}")
+            callee_label = callee_node.qualified_name or callee_node.name or "Function"
+            ref_id = builder.add_process(f"Call {callee_label}")
             if ref_id:
                 for src in frontier:
                     if src != "end":
@@ -183,8 +216,8 @@ def _process_call_graph(
         
         visited.add(callee_uid)
         
-        # Add callee as process node
-        callee_label = callee_node.name or "Function"
+        # Add callee as process node (use qualified name if available)
+        callee_label = callee_node.qualified_name or callee_node.name or "Function"
         callee_id = builder.add_process(callee_label)
         if not callee_id:
             break
@@ -194,7 +227,7 @@ def _process_call_graph(
             if src != "end":
                 builder.add_edge(src, callee_id)
         
-        # Recursively process callee's call graph
+        # Recursively process callee's call graph (not entry function anymore)
         callee_exit_points = _process_call_graph(
             callee_node,
             node_map,
@@ -203,6 +236,7 @@ def _process_call_graph(
             visited,
             detail_level,
             max_steps,
+            is_entry_function=False,
         )
         
         # Collect exit points from this callee
@@ -252,17 +286,111 @@ def _should_include_callee(node: ASTNode, detail_level: DetailLevel) -> bool:
     return False
 
 
-def find_function_by_name(ast_nodes: list[ASTNode], function_name: str) -> ASTNode | None:
-    """Find an AST node by function name."""
+def _find_best_entry_point(ast_nodes: list[ASTNode]) -> str | None:
+    """
+    Find the best entry point function when none is specified.
+    
+    Prefers:
+    1. Functions named 'main'
+    2. Functions with many callers (likely entry points)
+    3. Functions with many callees (likely orchestrators)
+    """
+    if not ast_nodes:
+        return None
+    
+    # Look for main function
     for node in ast_nodes:
+        if node.name.lower() == "main":
+            return node.uid
+    
+    # Look for function with most callers (likely an entry point)
+    best_node = None
+    max_callers = -1
+    for node in ast_nodes:
+        caller_count = len(node.callers) if node.callers else 0
+        if caller_count > max_callers:
+            max_callers = caller_count
+            best_node = node
+    
+    # If we found a function with callers, use it
+    if best_node and max_callers > 0:
+        return best_node.uid
+    
+    # Otherwise, look for function with most callees (likely an orchestrator)
+    best_node = None
+    max_callees = -1
+    for node in ast_nodes:
+        callee_count = len(node.callees) if node.callees else 0
+        if callee_count > max_callees:
+            max_callees = callee_count
+            best_node = node
+    
+    if best_node and max_callees > 0:
+        return best_node.uid
+    
+    # Fallback: return None to use first node
+    return None
+
+
+def find_function_by_name(ast_nodes: list[ASTNode], function_name: str) -> ASTNode | None:
+    """
+    Find an AST node by function name.
+    
+    Supports:
+    - Simple name: "AllocateApply"
+    - Qualified name: "Prg::AllocateApply"
+    - Case-insensitive matching
+    - Partial matching
+    """
+    # Normalize input: remove leading/trailing whitespace
+    function_name = function_name.strip()
+    function_name_lower = function_name.lower()
+    
+    # Check if input contains namespace qualifier
+    has_namespace = "::" in function_name
+    
+    for node in ast_nodes:
+        # Try exact match on simple name
         if node.name == function_name:
             return node
-        # Try case-insensitive match
-        if node.name.lower() == function_name.lower():
+        
+        # Try exact match on qualified name
+        if node.qualified_name and node.qualified_name == function_name:
             return node
-        # Try partial match
-        if function_name.lower() in node.name.lower():
+        
+        # Try case-insensitive match on simple name
+        if node.name.lower() == function_name_lower:
             return node
+        
+        # Try case-insensitive match on qualified name
+        if node.qualified_name and node.qualified_name.lower() == function_name_lower:
+            return node
+        
+        # If input has namespace, try matching qualified name
+        if has_namespace and node.qualified_name:
+            # Match full qualified name
+            if function_name_lower in node.qualified_name.lower():
+                return node
+            # Match just the function part after ::
+            parts = function_name.split("::")
+            if len(parts) == 2:
+                namespace, func = parts
+                if node.qualified_name.lower().endswith(f"::{func.lower()}") and namespace.lower() in node.qualified_name.lower():
+                    return node
+        
+        # If input doesn't have namespace, try matching simple name
+        if not has_namespace:
+            # Try partial match on simple name
+            if function_name_lower in node.name.lower():
+                return node
+            # Try partial match on qualified name (just the function part)
+            if node.qualified_name:
+                qualified_parts = node.qualified_name.split("::")
+                if len(qualified_parts) >= 2:
+                    func_part = qualified_parts[-1].lower()
+                    if function_name_lower == func_part:
+                        return node
+    
     return None
 
 
