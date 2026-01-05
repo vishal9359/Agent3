@@ -346,6 +346,7 @@ def _clean_and_validate_flowchart(flowchart: str) -> str:
         # Fix node IDs - replace invalid IDs (with spaces, special chars) with simple ones
         # Pattern: NodeID[Label] or NodeID{Label}
         def replace_node_id(match):
+            nonlocal next_id_letter  # Declare nonlocal at the start of the function
             node_id = match.group(1)
             # If node ID is invalid (has spaces, special chars, or is multi-word)
             if ' ' in node_id or not re.match(r'^[A-Za-z][A-Za-z0-9]*$', node_id):
@@ -354,7 +355,6 @@ def _clean_and_validate_flowchart(flowchart: str) -> str:
                     # Generate simple ID: A, B, C, etc.
                     new_id = chr(next_id_letter)
                     node_id_map[node_id] = new_id
-                    nonlocal next_id_letter
                     next_id_letter += 1
                     if next_id_letter > ord('Z'):
                         next_id_letter = ord('A')  # Wrap around
