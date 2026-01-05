@@ -161,12 +161,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     
     flowchart_parser.add_argument(
-        "--function",
-        default=None,
-        help="Entry function name (optional, uses first function if not specified)",
-    )
-    
-    flowchart_parser.add_argument(
         "--file",
         type=_path,
         default=None,

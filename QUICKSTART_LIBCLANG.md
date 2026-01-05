@@ -9,7 +9,11 @@ python -m agent5 build-ast --project_path ./my_project -o ast.json
 
 ### 2. Generate Flowchart
 ```bash
+# With function name specified
 python -m agent5 flowchart --ast-json ast.json --function main --out flow.mmd
+
+# Or auto-detect first function (omit --function)
+python -m agent5 flowchart --ast-json ast.json --out flow.mmd
 ```
 
 ## Prerequisites Check
@@ -44,6 +48,11 @@ python -m agent5 flowchart \
   --function main \
   --out flowchart.mmd \
   --detail-level medium
+
+# Or simpler (auto-detects first function):
+python -m agent5 flowchart \
+  --ast-json ast_with_calls.json \
+  --out flowchart.mmd
 
 # View the result
 cat flowchart.mmd
