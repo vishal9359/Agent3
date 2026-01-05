@@ -129,7 +129,8 @@ def extract_node_info(cursor: cindex.Cursor, file_path: str, module_name: str) -
     }
 
 
-visited: dict[str, bool] = {}
+visited_first_pass: dict[str, bool] = {}
+visited_second_pass: dict[str, bool] = {}
 
 
 def _extract_callee_name_from_call(cursor: cindex.Cursor) -> str | None:
@@ -197,9 +198,13 @@ def visit(
     nodes: dict[str, dict],
     call_edges: defaultdict[str, set],
     current_fn: str | None,
+    is_second_pass: bool = False,
 ) -> str | None:
     """
     AST traversal with call extraction.
+    
+    Args:
+        is_second_pass: If True, we're in the second pass (extracting calls)
     
     Returns:
         Updated current_fn (for proper tracking across recursion)
@@ -208,11 +213,23 @@ def visit(
     if cursor.location.file and cursor.location.file.name != file_path:
         return current_fn
     
-    fqn = module_name + ":" + file_path + ":" + (cursor.spelling or "<anonymous>")
-    if fqn in visited:
-        return current_fn
+    # Use appropriate visited dictionary based on pass
+    # For second pass, we need to traverse all nodes to find calls, so we use a more lenient check
+    if is_second_pass:
+        # In second pass, only track call expressions to avoid processing the same call twice
+        # Allow full traversal of function bodies
+        if cursor.kind == cindex.CursorKind.CALL_EXPR:
+            fqn = f"{file_path}:{cursor.location.line}:{cursor.location.column}"
+            if fqn in visited_second_pass:
+                return current_fn
+            visited_second_pass[fqn] = True
+        # For other nodes in second pass, don't use visited check (allow full traversal)
     else:
-        visited[fqn] = True
+        # First pass: use normal visited check to avoid processing same node twice
+        fqn = f"{file_path}:{cursor.location.line}:{cursor.location.column}:{cursor.kind}"
+        if fqn in visited_first_pass:
+            return current_fn
+        visited_first_pass[fqn] = True
     
     # Function / method / class declaration
     if cursor.kind in (
@@ -224,11 +241,36 @@ def visit(
         if cursor.spelling:
             uid = node_uid(cursor)
             if uid not in nodes:
-                nodes[uid] = extract_node_info(cursor, file_path, module_name)
-            current_fn = uid  # Update current function context
+                # First pass: extract full node info
+                if not is_second_pass:
+                    nodes[uid] = extract_node_info(cursor, file_path, module_name)
+                else:
+                    # Second pass: create minimal entry if missing
+                    nodes[uid] = {
+                        "uid": uid,
+                        "name": cursor.spelling,
+                        "qualified_name": _get_fully_qualified_name(cursor),
+                        "line_start": cursor.extent.start.line if cursor.extent else 0,
+                        "column_start": cursor.extent.start.column if cursor.extent else 0,
+                        "line_end": cursor.extent.end.line if cursor.extent else 0,
+                        "column_end": cursor.extent.end.column if cursor.extent else 0,
+                        "file_name": file_path,
+                        "module_name": module_name,
+                        "description": "",
+                        "flowchart": "",
+                        "callees": [],
+                        "callers": [],
+                    }
+            current_fn = uid  # Update current function context (for both passes)
     
     # Call expression - extract callee
-    elif cursor.kind == cindex.CursorKind.CALL_EXPR and current_fn:
+    if cursor.kind == cindex.CursorKind.CALL_EXPR:
+        if not current_fn:
+            # Debug: found a call but no current function context
+            if is_second_pass and len(visited_second_pass) < 100:  # Limit debug output
+                print(f"[DEBUG] Found CALL_EXPR at {cursor.location.line} but current_fn is None")
+            return current_fn
+        
         # Try multiple methods to get the callee
         callee_name = None
         callee_uid = None
@@ -251,80 +293,57 @@ def visit(
                 callee_name = ref.spelling
                 # Try to construct UID from the reference
                 if ref.location.file:
-                    callee_uid = node_uid(ref)
+                    ref_uid = node_uid(ref)
+                    if ref_uid in nodes:
+                        callee_uid = ref_uid
         
         # Method 2: Extract from call expression structure
         if not callee_name:
             callee_name = _extract_callee_name_from_call(cursor)
         
         # If we found a callee name, try to match it to existing nodes
-        if callee_name:
-            # If we already have a UID from referenced cursor, use it
-            if not callee_uid:
-                # Try to find match in nodes by name (simple or qualified)
-                for node_uid_key, node_data in nodes.items():
-                    node_name = node_data.get("name", "")
-                    node_qualified = node_data.get("qualified_name", "")
-                    
-                    # Match by simple name
-                    if node_name == callee_name:
+        if callee_name and not callee_uid:
+            # Try to find match in nodes by name (simple or qualified)
+            for node_uid_key, node_data in nodes.items():
+                node_name = node_data.get("name", "")
+                node_qualified = node_data.get("qualified_name", "")
+                
+                # Match by simple name
+                if node_name == callee_name:
+                    callee_uid = node_uid_key
+                    break
+                # Match by qualified name
+                if node_qualified and node_qualified == callee_name:
+                    callee_uid = node_uid_key
+                    break
+                # Match by qualified name ending (e.g., "Prg::AllocateApply" matches "AllocateApply")
+                if node_qualified and "::" in node_qualified:
+                    qualified_parts = node_qualified.split("::")
+                    if len(qualified_parts) >= 2 and qualified_parts[-1] == callee_name:
                         callee_uid = node_uid_key
                         break
-                    # Match by qualified name
-                    if node_qualified and node_qualified == callee_name:
+                # Reverse match: if callee is "Prg::AllocateApply", match "AllocateApply"
+                if "::" in callee_name:
+                    callee_parts = callee_name.split("::")
+                    if len(callee_parts) >= 2 and callee_parts[-1] == node_name:
                         callee_uid = node_uid_key
                         break
-                    # Match by qualified name ending (e.g., "Prg::AllocateApply" matches "AllocateApply")
-                    if node_qualified and "::" in node_qualified:
-                        qualified_parts = node_qualified.split("::")
-                        if len(qualified_parts) >= 2 and qualified_parts[-1] == callee_name:
-                            callee_uid = node_uid_key
-                            break
-            
-            # If we have a reference but no match, try to create UID from reference
-            if not callee_uid and ref and ref.location and ref.location.file:
-                ref_uid = node_uid(ref)
-                # Only use this if the reference is a function declaration
-                if ref.kind in (
-                    cindex.CursorKind.FUNCTION_DECL,
-                    cindex.CursorKind.CXX_METHOD,
-                    cindex.CursorKind.CONSTRUCTOR,
-                    cindex.CursorKind.DESTRUCTOR,
-                ):
-                    callee_uid = ref_uid
-                    # Add to nodes if not already present
-                    if ref_uid not in nodes:
-                        try:
-                            ref_module = get_module_name(ref.location.file.name, os.path.dirname(file_path))
-                            nodes[ref_uid] = extract_node_info(ref, ref.location.file.name, ref_module)
-                        except Exception:
-                            # Create minimal entry
-                            nodes[ref_uid] = {
-                                "uid": ref_uid,
-                                "name": callee_name,
-                                "qualified_name": _get_fully_qualified_name(ref),
-                                "line_start": ref.location.line if ref.location else 0,
-                                "column_start": ref.location.column if ref.location else 0,
-                                "line_end": ref.location.line if ref.location else 0,
-                                "column_end": ref.location.column if ref.location else 0,
-                                "file_name": ref.location.file.name if ref.location and ref.location.file else "",
-                                "module_name": get_module_name(ref.location.file.name, os.path.dirname(file_path)) if ref.location and ref.location.file else "",
-                                "description": "",
-                                "flowchart": "",
-                                "callees": [],
-                                "callers": [],
-                            }
-            
-            # Record the call edge (will be resolved in parse_codebase)
-            if callee_uid:
-                call_edges[current_fn].add(callee_uid)
-            elif callee_name:
-                # Store by name for later resolution in parse_codebase
-                call_edges[current_fn].add(f"NAME:{callee_name}")
+        
+        # Record the call edge (will be resolved in parse_codebase)
+        if callee_uid:
+            call_edges[current_fn].add(callee_uid)
+        elif callee_name:
+            # Store by name for later resolution in parse_codebase
+            call_edges[current_fn].add(f"NAME:{callee_name}")
+        
+        # Debug output (limit to avoid spam)
+        if is_second_pass and len(call_edges) <= 20:  # Only print first 20 functions with calls
+            caller_name = nodes.get(current_fn, {}).get("name", current_fn) if current_fn in nodes else current_fn
+            print(f"[DEBUG] Found call: {caller_name} -> {callee_name or callee_uid or 'unknown'}")
     
     # Recursively process children
     for child in cursor.get_children():
-        current_fn = visit(child, file_path, module_name, nodes, call_edges, current_fn)
+        current_fn = visit(child, file_path, module_name, nodes, call_edges, current_fn, is_second_pass)
     
     return current_fn
 
@@ -336,6 +355,7 @@ def parse_file(
     compile_args: list[str],
     nodes: dict[str, dict],
     call_edges: defaultdict[str, set],
+    is_second_pass: bool = False,
 ) -> None:
     """Parse a single C++ file and extract AST information."""
     module_name = get_module_name(file_path, root_dir)
@@ -346,7 +366,7 @@ def parse_file(
         options=cindex.TranslationUnit.PARSE_DETAILED_PROCESSING_RECORD,
     )
     
-    visit(tu.cursor, file_path, module_name, nodes, call_edges, None)
+    visit(tu.cursor, file_path, module_name, nodes, call_edges, None, is_second_pass)
 
 
 def parse_codebase(root_dir: str | Path, compile_args: list[str] | None = None) -> list[dict]:
@@ -368,8 +388,9 @@ def parse_codebase(root_dir: str | Path, compile_args: list[str] | None = None) 
     call_edges: defaultdict[str, set] = defaultdict(set)
     name_to_uids: defaultdict[str, list[str]] = defaultdict(list)  # Map function names to UIDs
     
-    # Reset visited for each codebase parse
-    visited.clear()
+    # Reset visited dictionaries for each codebase parse
+    visited_first_pass.clear()
+    visited_second_pass.clear()
     
     # First pass: Collect all function declarations across all files
     print("[INFO] Collecting function declarations...")
@@ -417,15 +438,16 @@ def parse_codebase(root_dir: str | Path, compile_args: list[str] | None = None) 
     print(f"[INFO] Found {len(nodes)} functions. Extracting call relationships...")
     
     # Second pass: Extract call relationships
-    visited.clear()  # Reset for call extraction
     for root, _, files in os.walk(root_dir):
         for f in files:
             if is_cpp_file(f):
                 path = os.path.join(root, f)
                 try:
-                    parse_file(index, path, root_dir, compile_args, nodes, call_edges)
+                    parse_file(index, path, root_dir, compile_args, nodes, call_edges, is_second_pass=True)
                 except Exception as e:
                     print(f"[WARN] Failed to parse {path} for call extraction: {e}")
+    
+    print(f"[INFO] Extracted {sum(len(callees) for callees in call_edges.values())} call edges from AST")
     
     # Resolve call edges: match by name if UID doesn't exist
     resolved_edges: defaultdict[str, set[str]] = defaultdict(set)
