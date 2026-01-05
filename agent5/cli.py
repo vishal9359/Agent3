@@ -275,52 +275,121 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         
         elif args.command == "flowchart":
-            console.print("\n[bold cyan]═══ Agent5: Generate Flowchart from JSON AST ═══[/bold cyan]\n")
+            console.print("\n[bold cyan]═══ Agent5: Generate Flowchart ═══[/bold cyan]\n")
             
-            from agent5.flowchart import write_flowchart
-            
-            console.print(f"[cyan]AST JSON:[/cyan] {args.ast_json}")
-            
-            if args.function:
-                console.print(f"[cyan]Entry function:[/cyan] {args.function}")
+            # Determine mode: libclang AST-based (new) or legacy RAG-based scenario
+            if args.scenario:
+                # Legacy scenario mode: Project-level flowchart using RAG
+                if not args.collection:
+                    console.print("[red]Error: --collection is required for --scenario mode[/red]")
+                    console.print("Usage: python -m agent5 flowchart --scenario 'Create volume' --collection myproject --out flow.mmd")
+                    return 1
+                
+                from agent5.project_scenario import generate_project_scenario_flowchart
+                
+                console.print(f"[cyan]Mode:[/cyan] Project Scenario (Legacy RAG-based)")
+                console.print(f"[cyan]Scenario:[/cyan] {args.scenario}")
+                console.print(f"[cyan]Collection:[/cyan] {args.collection}")
+                console.print(f"[cyan]Output:[/cyan] {args.out}")
+                console.print(f"[cyan]Max steps:[/cyan] {args.max_steps}")
+                console.print()
+                
+                console.print("[yellow]Step 1: Searching project for relevant code...[/yellow]")
+                console.print("[yellow]Step 2: Understanding scenario flow using LLM...[/yellow]")
+                console.print("[yellow]Step 3: Building flowchart...[/yellow]")
+                
+                scenario, mermaid = generate_project_scenario_flowchart(
+                    collection=args.collection,
+                    scenario_name=args.scenario,
+                    output_path=args.out,
+                    project_path=args.project_path,
+                    max_steps=args.max_steps,
+                    k=args.k,
+                    chat_model=args.chat_model,
+                    embed_model=args.embed_model,
+                    ollama_base_url=args.ollama_base_url,
+                )
+                
+                console.print(f"\n[bold green]✓ Project scenario flowchart generated[/bold green]")
+                console.print(f"[green]  Scenario:[/green] {scenario.scenario_name}")
+                console.print(f"[green]  Description:[/green] {scenario.description}")
+                console.print(f"[green]  Entry points:[/green] {', '.join(scenario.entry_points[:3])}")
+                console.print(f"[green]  Files involved:[/green] {len(scenario.involved_files)}")
+                console.print(f"[green]  Steps:[/green] {len(scenario.key_steps)}")
+                console.print(f"[green]  Output:[/green] {args.out}")
+                
+                understanding_path = args.out.with_suffix(".scenario.json")
+                console.print(f"[green]  Understanding:[/green] {understanding_path}")
+                console.print()
+                
             else:
-                console.print("[cyan]Entry function:[/cyan] Auto-detect (first function in AST)")
-            
-            if args.file:
-                console.print(f"[cyan]Reference file:[/cyan] {args.file}")
-            
-            console.print(f"[cyan]Detail level:[/cyan] {args.detail_level}")
-            console.print(f"[cyan]Max steps:[/cyan] {args.max_steps}")
-            console.print(f"[cyan]Output:[/cyan] {args.out}")
-            console.print()
-            
-            console.print("[yellow]Step 1: Loading JSON AST...[/yellow]")
-            console.print("[yellow]Step 2: Building Scenario Flow Model (SFM)...[/yellow]")
-            console.print("[yellow]Step 3: Generating Mermaid flowchart...[/yellow]")
-            
-            flowchart = write_flowchart(
-                output_path=args.out,
-                file_path=args.file,
-                function_name=args.function,
-                ast_json_path=args.ast_json,
-                project_path=None,
-                max_steps=args.max_steps,
-                detail_level=args.detail_level,
-                use_llm=args.use_llm,
-                chat_model=args.chat_model,
-                ollama_base_url=args.ollama_base_url,
-            )
-            
-            console.print(f"\n[bold green]✓ Flowchart generated successfully[/bold green]")
-            console.print(f"[green]  Nodes:[/green] {flowchart.node_count}")
-            console.print(f"[green]  Edges:[/green] {flowchart.edge_count}")
-            console.print(f"[green]  Output:[/green] {args.out}")
-            
-            if flowchart.sfm:
-                sfm_path = args.out.with_suffix(".sfm.json")
-                console.print(f"[green]  SFM (debug):[/green] {sfm_path}")
-            
-            console.print()
+                # libclang AST-based mode (new workflow)
+                from agent5.flowchart import write_flowchart
+                
+                console.print(f"[cyan]Mode:[/cyan] libclang AST-based Flowchart Generation")
+                
+                if args.file:
+                    console.print(f"[cyan]Reference file:[/cyan] {args.file}")
+                
+                if args.function:
+                    console.print(f"[cyan]Entry function:[/cyan] {args.function}")
+                else:
+                    console.print("[cyan]Entry function:[/cyan] Auto-detect (first function in AST)")
+                
+                # Determine AST JSON path
+                ast_json_path = args.ast_json
+                if not ast_json_path:
+                    if args.project_path:
+                        ast_json_path = args.project_path / "ast_with_calls.json"
+                    elif args.file:
+                        ast_json_path = args.file.parent / "ast_with_calls.json"
+                    else:
+                        console.print("[red]Error: --ast-json is required, or provide --project-path or --file to locate it[/red]")
+                        console.print("Usage: python -m agent5 flowchart --function main --ast-json ast.json --out flow.mmd")
+                        return 1
+                
+                if not ast_json_path.exists():
+                    console.print(f"[red]Error: AST JSON file not found: {ast_json_path}[/red]")
+                    console.print("Please run 'python -m agent5 build-ast' first to generate the AST JSON file.")
+                    return 1
+                
+                console.print(f"[cyan]AST JSON:[/cyan] {ast_json_path}")
+                
+                if args.project_path:
+                    console.print(f"[cyan]Project path:[/cyan] {args.project_path}")
+                
+                console.print(f"[cyan]Detail level:[/cyan] {args.detail_level}")
+                console.print(f"[cyan]Max steps:[/cyan] {args.max_steps}")
+                console.print(f"[cyan]Output:[/cyan] {args.out}")
+                console.print()
+                
+                console.print("[yellow]Step 1: Loading JSON AST...[/yellow]")
+                console.print("[yellow]Step 2: Building Scenario Flow Model (SFM)...[/yellow]")
+                console.print("[yellow]Step 3: Generating Mermaid flowchart...[/yellow]")
+                
+                flowchart = write_flowchart(
+                    output_path=args.out,
+                    file_path=args.file,
+                    function_name=args.function,
+                    ast_json_path=ast_json_path,
+                    project_path=args.project_path,
+                    max_steps=args.max_steps,
+                    detail_level=args.detail_level,
+                    use_llm=args.use_llm,
+                    chat_model=args.chat_model,
+                    ollama_base_url=args.ollama_base_url,
+                )
+                
+                console.print(f"\n[bold green]✓ Flowchart generated successfully[/bold green]")
+                console.print(f"[green]  Nodes:[/green] {flowchart.node_count}")
+                console.print(f"[green]  Edges:[/green] {flowchart.edge_count}")
+                console.print(f"[green]  Output:[/green] {args.out}")
+                
+                if flowchart.sfm:
+                    sfm_path = args.out.with_suffix(".sfm.json")
+                    console.print(f"[green]  SFM (debug):[/green] {sfm_path}")
+                
+                console.print()
             
             return 0
         
