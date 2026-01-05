@@ -65,8 +65,11 @@ cat flowchart.mmd
 - Or install: `sudo apt-get install libclang-18-dev`
 
 **Error: "Function not found in AST"**
-- Check function name spelling (case-sensitive)
+- Check function name spelling (supports both simple and qualified names)
+- Try both formats: `--function AllocateApply` or `--function Prg::AllocateApply`
 - Verify the function exists in the JSON file: `grep -i "functionName" ast_with_calls.json`
+- If using an old AST JSON file, rebuild it: `python -m agent5 build-ast --project_path ./project -o ast.json`
+  (New AST files include qualified names for better matching)
 
 **Empty AST output**
 - Check compilation arguments (may need include paths)
